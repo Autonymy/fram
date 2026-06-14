@@ -1,12 +1,14 @@
 # Chelonia
 
-A claim-native, agent-first substrate for coordinating work and life.
+**I ramble into Markdown. Chelonia turns that into a queryable dependency graph —
+then tells me what's ready, what's blocked, and what boring thing unlocks the
+most progress.**
 
-The source of truth is a **graph of claims** (relational facts) — not a board you
-drag cards around, and not rows in a database. You don't maintain it by hand: an
-agent reads your prose and keeps the graph true, and you *ask* it instead of
-*updating* it — "what's ready?", "what should I work on?", "what's blocked, and
-on what?".
+A claim-native, agent-first substrate for coordinating work and life. The source
+of truth is a **graph of claims** (relational facts) — not a board you drag cards
+around, and not rows in a database. You don't maintain it by hand: an agent reads
+your prose and keeps the graph true, and you *ask* it instead of *updating* it —
+"what's ready?", "what should I work on?", "what's blocked, and on what?".
 
 > **Status: early and experimental.** Built as a personal tool; shared because
 > the *shape* might be useful to others. Expect rough edges and churn.
