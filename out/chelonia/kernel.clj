@@ -75,7 +75,7 @@
    v3 (if (and (some? pa) (not (vec-contains? ids pa))) (conj v2 (str "part_of references missing entity " pa)) v2)
    v5 (if (cycle? claims "depends_on" te) (conj v3 "depends_on cycle") v3)
    v6 (if (cycle? claims "part_of" te) (conj v5 "part_of cycle") v5)
-   v7 (reduce (fn [acc rt] (if (not (vec-contains? ids rt)) (conj acc (str "relates_to references missing entity " rt)) acc)) v6 (many claims te "relates_to"))]
+   v7 (reduce (fn [acc p] (reduce (fn [a rt] (if (not (vec-contains? ids rt)) (conj a (str p " references missing entity " rt)) a)) acc (many claims te p))) v6 ["relates_to" "clarifies" "amends"])]
   v7))
 
 (defrecord Index [single bypred subjects revdep])
@@ -130,5 +130,5 @@
    v3 (if (and (some? pa) (nil? (one-i idx pa "title"))) (conj v2 (str "part_of references missing entity " pa)) v2)
    v5 (if (cycle-i? idx "depends_on" te) (conj v3 "depends_on cycle") v3)
    v6 (if (cycle-i? idx "part_of" te) (conj v5 "part_of cycle") v5)
-   v7 (reduce (fn [acc rt] (if (nil? (one-i idx rt "title")) (conj acc (str "relates_to references missing entity " rt)) acc)) v6 (many-i idx te "relates_to"))]
+   v7 (reduce (fn [acc p] (reduce (fn [a rt] (if (nil? (one-i idx rt "title")) (conj a (str p " references missing entity " rt)) a)) acc (many-i idx te p))) v6 ["relates_to" "clarifies" "amends"])]
   v7))

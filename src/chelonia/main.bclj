@@ -63,7 +63,7 @@
 ;; (the old side of a file edit) are NOT counted; only real coordinator writes.
 (defn- pending-coord-count [log :- String file-sigs :- (Map String Bool)] :- Int
   (count (filterv (fn [v :- fold/Latest] :- Bool
-                    (and (or (= (:frame v) "coord") (= (:frame v) "agent"))
+                    (and (or (= (:frame v) "coord") (= (:frame v) "agent") (= (:frame v) "cli"))
                          (nil? (get file-sigs (str (:l v) "|" (:p v) "|" (:r v))))))
                   (fold/fold-latest (chelonia.rt/read-log log)))))
 
@@ -302,7 +302,9 @@
                              (and (some? (k/one-i idx te "committed"))
                                   (and (nil? (k/one-i idx te "driver")) (proj/blocked? idx te))))
                            nonterm)
-        draft-g (filterv (fn [te :- String] :- Bool (nil? (k/one-i idx te "committed"))) nonterm)]
+        draft-g (filterv (fn [te :- String] :- Bool
+                           (and (nil? (k/one-i idx te "committed")) (nil? (k/one-i idx te "driver"))))
+                         nonterm)]
     (println (str "ON YOUR PLATE — " (count nonterm) " open"))
     (plate-group idx "active" active-g)
     (plate-group idx "ready" ready-g)

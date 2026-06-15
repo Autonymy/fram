@@ -92,7 +92,20 @@
     (when (m "part_of") (add "part_of" (str "@" (new-id (m "part_of")))))
     (doseq [d (as-list (m "depends_on"))] (add "depends_on" (str "@" (new-id d))))
     (when (m "superseded_by") (add "superseded_by" (str "@" (new-id (m "superseded_by")))))
+    ;; clarifies / amends are thread-ref edges too (these were silently dropped
+    ;; in the first migration run — see the cutover-verify findings).
+    (doseq [r (as-list (m "clarifies"))] (add "clarifies" (str "@" (new-id r))))
+    (doseq [r (as-list (m "amends"))] (add "amends" (str "@" (new-id r))))
     (doseq [t (as-list (m "tags"))] (add "relates_to" (str "@topic-" (tslug t))))
+    ;; fall-through: emit ANY remaining frontmatter key as a literal so a future
+    ;; corpus can never lose a field we didn't explicitly anticipate.
+    (let [handled #{"id" "title" "owner" "lead" "driver" "source" "proposed_by"
+                    "created_by" "created_at" "updated_at" "state" "do_on" "valid_until"
+                    "estimate_hours" "repo" "part_of" "depends_on" "superseded_by"
+                    "clarifies" "amends" "tags" "canceled_reason"}]
+      (doseq [k (keys m)]
+        (when-not (handled k)
+          (doseq [v (as-list (m k))] (add k v)))))
     @L))
 
 (defn thread-file [m body]

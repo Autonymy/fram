@@ -48,7 +48,7 @@
   (reduce (fn [m c] (assoc m (claim-sig c) true)) {} claims))
 
 (defn- pending-coord-count [^String log file-sigs]
-  (count (filterv (fn [v] (and (or (= (:frame v) "coord") (= (:frame v) "agent")) (nil? (get file-sigs (str (:l v) "|" (:p v) "|" (:r v)))))) (fold/fold-latest (chelonia.rt/read-log log)))))
+  (count (filterv (fn [v] (and (or (= (:frame v) "coord") (= (:frame v) "agent") (= (:frame v) "cli")) (nil? (get file-sigs (str (:l v) "|" (:p v) "|" (:r v)))))) (fold/fold-latest (chelonia.rt/read-log log)))))
 
 (defn cmd-import [^String threads-dir ^String log ^Boolean force]
   (let [as (imp/load-corpus threads-dir)
@@ -212,7 +212,7 @@
    active-g (filterv (fn [te] (some? (k/one-i idx te "driver"))) nonterm)
    ready-g (filterv (fn [te] (and (some? (k/one-i idx te "committed")) (and (nil? (k/one-i idx te "driver")) (not (proj/blocked? idx te))))) nonterm)
    blocked-g (filterv (fn [te] (and (some? (k/one-i idx te "committed")) (and (nil? (k/one-i idx te "driver")) (proj/blocked? idx te)))) nonterm)
-   draft-g (filterv (fn [te] (nil? (k/one-i idx te "committed"))) nonterm)]
+   draft-g (filterv (fn [te] (and (nil? (k/one-i idx te "committed")) (nil? (k/one-i idx te "driver")))) nonterm)]
   (println (str "ON YOUR PLATE — " (count nonterm) " open"))
   (plate-group idx "active" active-g)
   (plate-group idx "ready" ready-g)

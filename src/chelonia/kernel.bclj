@@ -120,13 +120,17 @@
         v6 (if (cycle? claims "part_of" te) (conj v5 "part_of cycle") v5)
         ;; relates_to is loose relatedness: target must be a real thread (no
         ;; dangling concept-in-the-clouds), but cycles are fine and expected.
+        ;; relates_to / clarifies / amends are all loose thread-ref edges: target
+        ;; must be a real thread (no cycle constraint).
         v7 (reduce
-            (fn [acc :- (Vec String) rt :- String] :- (Vec String)
-              (if (not (vec-contains? ids rt))
-                (conj acc (str "relates_to references missing entity " rt))
-                acc))
+            (fn [acc :- (Vec String) p :- String] :- (Vec String)
+              (reduce (fn [a :- (Vec String) rt :- String] :- (Vec String)
+                        (if (not (vec-contains? ids rt))
+                          (conj a (str p " references missing entity " rt))
+                          a))
+                      acc (many claims te p)))
             v6
-            (many claims te "relates_to"))]
+            ["relates_to" "clarifies" "amends"])]
     v7))
 
 ;; --- indexed query layer (O(1) lookups, built once) -------------------------
@@ -174,7 +178,7 @@
 ;; --- indexed validation (O(edges) per thread; for whole-corpus validate) -----
 ;; Mirrors `violations` but over the Index — turns whole-corpus validate from
 ;; O(threads * claims) raw scans into O(threads + edges). Existence of a ref is
-;; O(1): a real thread always has a single-valued `state` claim.
+;; O(1): a real thread always has a single-valued `title` claim.
 
 (defn cycle-i? [idx :- Index pred :- String te :- String] :- Bool
   (let [succ (fn [x :- String] :- (Vec String)
@@ -208,10 +212,12 @@
         v5 (if (cycle-i? idx "depends_on" te) (conj v3 "depends_on cycle") v3)
         v6 (if (cycle-i? idx "part_of" te) (conj v5 "part_of cycle") v5)
         v7 (reduce
-            (fn [acc :- (Vec String) rt :- String] :- (Vec String)
-              (if (nil? (one-i idx rt "title"))
-                (conj acc (str "relates_to references missing entity " rt))
-                acc))
+            (fn [acc :- (Vec String) p :- String] :- (Vec String)
+              (reduce (fn [a :- (Vec String) rt :- String] :- (Vec String)
+                        (if (nil? (one-i idx rt "title"))
+                          (conj a (str p " references missing entity " rt))
+                          a))
+                      acc (many-i idx te p)))
             v6
-            (many-i idx te "relates_to"))]
+            ["relates_to" "clarifies" "amends"])]
     v7))
