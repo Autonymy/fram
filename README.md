@@ -1,10 +1,12 @@
 # Chelonia
 
-**I ramble into Markdown — a task, a project, "book the flight." Chelonia
-turns that into a queryable dependency graph, then tells me what's ready, what's
-blocked, and what boring keystone unlocks the most progress. The board is
-*derived* from that graph, never hand-maintained — so it can't quietly go stale
-the way every other PM tool does.**
+**Thought in, structure out — with almost no friction in between.** I capture an
+intention the moment it lands: a thread is just Markdown — a little frontmatter,
+some prose — *a task, a project, "book the flight."* Chelonia folds those threads
+into a queryable dependency graph, and from the terminal tells me what's *ready*,
+what's *blocked*, and which boring keystone unlocks the most progress. The board
+is **derived** from that graph, never hand-maintained — so it can't quietly rot
+the way every other PM tool does.
 
 A self-hostable, claim-native substrate for coordinating **work and life**. The
 source of truth is a **graph of claims** (relational facts — dependencies,
@@ -124,8 +126,19 @@ proven under local test load, single machine — not distributed consensus.
 
 ## Self-hostable and private
 
-Chelonia runs entirely on your machine. Self-hosting isn't a tier — it's the only
-mode.
+**You run the authority — always. No hosted SaaS, no account, no cloud;
+self-hosting isn't a tier, it's the only mode.** And it's a genuine
+*server-authority* design, not a single-binary toy: one coordinator process owns
+the writes, and clients (the CLI, your agents) connect to it over a socket. So
+"self-hosted" means *a client/server you operate* — you decide where the server
+runs.
+
+Where it runs today: the coordinator binds **loopback only** (`127.0.0.1`) — one
+machine, the one you work on. Putting that same authority on a **remote box you
+own** (so several machines, or a second person, share one graph) is the planned
+next step — gated on auth + a network-safe transport, because the socket is
+currently unauthenticated by design. In short: *self-hosted always; single-machine
+today; a remote server you own on the roadmap — never a vendor cloud.*
 
 - **Your data is two plain-text things you can `grep`:** your Markdown threads,
   and an append-only `claims.log`. No database, no account, no cloud, no telemetry.
@@ -136,7 +149,8 @@ mode.
 - **Nothing to build.** The compiled code is committed; running it needs only
   [babashka](https://babashka.org). An optional GraalVM native binary gives
   ~0.2s/command for larger corpora.
-- **The daemon binds localhost only** (`127.0.0.1`) and serves ~1ms in-memory reads.
+- **Warm, local reads.** The daemon serves ~1ms in-memory reads over that
+  loopback socket.
 
 ```sh
 # 1. Clone
