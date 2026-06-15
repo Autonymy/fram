@@ -63,27 +63,36 @@
 (defn- ^Boolean ctrl? [^String s]
   (or (str/includes? s "\n") (str/includes? s "\r")))
 
-(defn- ^String capture-md [^String id ^String title ^String owner ^String today]
-  (str "---\n" "id: " id "\n" "title: " (dq title) "\n" "state: ready\n" "owner: " (dq owner) "\n" "source: self\n" "created_by: you\n" "created_at: " today "\n" "updated_at: " today "\n" "---\n\n" "## Claim\n\n" title "\n\n" "## Log\n\n" today " — captured via `chelonia capture`.\n"))
+(defn- ^String fm-opt-line [^String k ^String v]
+  (if (str/blank? v) "" (str k ": " (dq v) "\n")))
+
+(defn- ^String capture-md [^String id ^String title ^String owner ^String source ^String author ^String lead ^String driver ^String proposed ^String today]
+  (str "---\n" "id: " id "\n" "title: " (dq title) "\n" "state: ready\n" "owner: " (dq owner) "\n" (fm-opt-line "lead" lead) (fm-opt-line "driver" driver) "source: " (dq source) "\n" (fm-opt-line "proposed_by" proposed) "created_by: " (dq author) "\n" "created_at: " today "\n" "updated_at: " today "\n" "---\n\n" "## Claim\n\n" title "\n\n" "## Log\n\n" today " — captured via `chelonia capture`.\n"))
 
 (defn cmd-capture [^String threads-dir ^String log ^String title ^String owner]
+  (let [source (chelonia.rt/getenv-or "CHELONIA_SOURCE" "self")
+   author (chelonia.rt/getenv-or "CHELONIA_AUTHOR" "you")
+   lead (chelonia.rt/getenv-or "CHELONIA_LEAD" "")
+   driver (chelonia.rt/getenv-or "CHELONIA_DRIVER" "")
+   proposed (chelonia.rt/getenv-or "CHELONIA_PROPOSED_BY" "")]
   (cond
   (or (str/blank? title) (ctrl? title)) (println "usage: capture <title> [owner]   (title must be a non-empty single line)")
   (ctrl? owner) (println "capture: owner must be a single line")
+  (or (ctrl? source) (ctrl? author) (ctrl? lead) (ctrl? driver) (ctrl? proposed)) (println "capture: CHELONIA_SOURCE/AUTHOR/LEAD/DRIVER/PROPOSED_BY must each be a single line")
   :else (do
   (chelonia.rt/ensure-dir threads-dir)
   (let [id (chelonia.rt/reserve-id threads-dir)
    slug (chelonia.rt/slugify title)
    today (chelonia.rt/today-iso)
    path (str threads-dir "/" id "-" slug ".md")]
-  (chelonia.rt/spit-file path (capture-md id title owner today))
+  (chelonia.rt/spit-file path (capture-md id title owner source author lead driver proposed today))
   (chelonia.rt/release-id threads-dir id)
   (let [as (imp/load-corpus threads-dir)
    file-sigs (sig-member-map (:claims (fold/fold as)))
    lost (pending-coord-count log file-sigs)]
   (if (> lost 0) (println (str "captured -> " path "\n" "  NOT imported: " lost " pending coordinator write(s) in the log. " "Re-run `import` (folds in the capture AND those writes), or `import --force`.")) (do
   (chelonia.rt/write-log log as)
-  (println (str "captured -> thread:" id "  " title "  [ready/" owner "]\n" "  file:     " path "\n" "  imported: " (count as) " claims. Next: chelonia tell " id " <pred> <value>")))))))))
+  (println (str "captured -> thread:" id "  " title "  [ready/" owner "]\n" "  file:     " path "\n" "  imported: " (count as) " claims. Next: chelonia tell " id " <pred> <value>"))))))))))
 
 (defn cmd-export [^String threads-dir ^String log ^String out-dir]
   (let [log-claims (:claims (fold/fold (chelonia.rt/read-log log)))

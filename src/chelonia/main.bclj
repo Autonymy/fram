@@ -26,6 +26,7 @@
 (declare-extern chelonia.rt/reserve-id [String -> String])
 (declare-extern chelonia.rt/release-id [String String -> Nil])
 (declare-extern chelonia.rt/slugify [String -> String])
+(declare-extern chelonia.rt/getenv-or [String String -> String])
 (declare-extern chelonia.rt/coord-version [Int -> Int])
 (declare-extern chelonia.rt/coord-assert [Int String String String Int -> String])
 (declare-extern chelonia.rt/coord-retract [Int String String String Int -> String])
@@ -92,14 +93,26 @@
 (defn- ctrl? [s :- String] :- Bool
   (or (str/includes? s "\n") (str/includes? s "\r")))
 
-(defn- capture-md [id :- String title :- String owner :- String today :- String] :- String
+;; an optional frontmatter line — omitted entirely when the value is blank
+(defn- fm-opt-line [k :- String v :- String] :- String
+  (if (str/blank? v) "" (str k ": " (dq v) "\n")))
+
+;; Provenance defaults are generic (self/you); a consumer overrides them via
+;; CHELONIA_SOURCE/AUTHOR/LEAD/DRIVER/PROPOSED_BY (the life-os wrapper sets its
+;; own conventions so a terminal capture validates without hand-fixing). Field
+;; order follows the threads manual's canonical order.
+(defn- capture-md [id :- String title :- String owner :- String source :- String author :- String
+                   lead :- String driver :- String proposed :- String today :- String] :- String
   (str "---\n"
        "id: " id "\n"
        "title: " (dq title) "\n"
        "state: ready\n"
        "owner: " (dq owner) "\n"
-       "source: self\n"
-       "created_by: you\n"
+       (fm-opt-line "lead" lead)
+       (fm-opt-line "driver" driver)
+       "source: " (dq source) "\n"
+       (fm-opt-line "proposed_by" proposed)
+       "created_by: " (dq author) "\n"
        "created_at: " today "\n"
        "updated_at: " today "\n"
        "---\n\n"
@@ -107,11 +120,19 @@
        "## Log\n\n" today " — captured via `chelonia capture`.\n"))
 
 (defn cmd-capture [threads-dir :- String log :- String title :- String owner :- String] :- Nil
+  (let [source (chelonia.rt/getenv-or "CHELONIA_SOURCE" "self")
+        author (chelonia.rt/getenv-or "CHELONIA_AUTHOR" "you")
+        lead (chelonia.rt/getenv-or "CHELONIA_LEAD" "")
+        driver (chelonia.rt/getenv-or "CHELONIA_DRIVER" "")
+        proposed (chelonia.rt/getenv-or "CHELONIA_PROPOSED_BY" "")]
   (cond
     [(or (str/blank? title) (ctrl? title))
      (println "usage: capture <title> [owner]   (title must be a non-empty single line)")]
     [(ctrl? owner)
      (println "capture: owner must be a single line")]
+    ;; env-supplied provenance gets the same line-oriented-injection guard as title/owner
+    [(or (ctrl? source) (ctrl? author) (ctrl? lead) (ctrl? driver) (ctrl? proposed))
+     (println "capture: CHELONIA_SOURCE/AUTHOR/LEAD/DRIVER/PROPOSED_BY must each be a single line")]
     [:else
      (do
        (chelonia.rt/ensure-dir threads-dir)
@@ -121,7 +142,7 @@
              slug (chelonia.rt/slugify title)
              today (chelonia.rt/today-iso)
              path (str threads-dir "/" id "-" slug ".md")]
-         (chelonia.rt/spit-file path (capture-md id title owner today))
+         (chelonia.rt/spit-file path (capture-md id title owner source author lead driver proposed today))
          (chelonia.rt/release-id threads-dir id)
          ;; fold the new file in, guarded exactly like `import`: refuse to
          ;; clobber pending coordinator writes (the file stays on disk regardless).
@@ -135,7 +156,7 @@
              (do (chelonia.rt/write-log log as)
                  (println (str "captured -> thread:" id "  " title "  [ready/" owner "]\n"
                                "  file:     " path "\n"
-                               "  imported: " (count as) " claims. Next: chelonia tell " id " <pred> <value>")))))))]))
+                               "  imported: " (count as) " claims. Next: chelonia tell " id " <pred> <value>")))))))])))
 
 ;; Inverse of import: fold the log -> write each thread as markdown into out-dir.
 ;; SAFETY (concurrent agents): refuse if threads/ holds edits not yet in the log —

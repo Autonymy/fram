@@ -100,6 +100,10 @@
   (or (System/getenv "CHELONIA_LOG")
       (str (System/getProperty "user.dir") "/claims.log")))
 
+;; capture provenance: generic fallbacks here; a consumer (e.g. the life-os
+;; wrapper) exports its own conventions via these env vars.
+(defn getenv-or [k fallback] (or (System/getenv k) fallback))
+
 ;; --- the assertion log ------------------------------------------------------
 ;; one EDN map per line: {:tx Int :op "assert"|"retract" :l :p :r}.
 
