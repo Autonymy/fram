@@ -43,6 +43,54 @@
 (defn today-iso [] (str (java.time.LocalDate/now)))
 (defn str-lt? [a b] (neg? (compare a b)))
 
+;; --- terminal capture: id + slug from a one-line title ----------------------
+;; now-id is the YYYYMMDDHHMMSS thread id convention; slugify is its filename
+;; companion (lowercase, non-alnum -> '_', collapsed, trimmed, capped at 60).
+
+(defn now-id []
+  (.format (java.time.LocalDateTime/now)
+           (java.time.format.DateTimeFormatter/ofPattern "yyyyMMddHHmmss")))
+
+;; The thread id, not the filename, is the entity key — two captures in the same
+;; second produce distinct filenames (slugs differ) but would COLLIDE on id.
+(defn- id-taken? [dir id]
+  (let [f (io/file dir)]
+    (boolean
+     (when (.isDirectory f)
+       (some (fn [n] (or (str/starts-with? n (str id "-")) (= n (str id ".md"))))
+             (map #(.getName ^java.io.File %) (.listFiles f)))))))
+
+;; Atomically reserve a free id ACROSS concurrent capture processes: bump past
+;; any id already claimed by a file (id-taken?) AND any in-flight reservation —
+;; the latter via an exclusive CREATE_NEW of a per-id lock dotfile, which two
+;; racers in the same second cannot both win. Caller writes <id>-<slug>.md then
+;; release-id. (A scan-then-write alone has a TOCTOU window two distinct-slug
+;; captures slip through, silently folding into one entity on import.)
+(defn- lock-path [dir id] (str dir "/." id ".lock"))
+(defn reserve-id [dir]
+  (loop [n (Long/parseLong (now-id))]
+    (let [id (str n)
+          ;; try returns the id on a clean exclusive create, nil if the id is
+          ;; taken or a racer won the lock — recur OUTSIDE the try (recur cannot
+          ;; cross a try/catch boundary).
+          got (when-not (id-taken? dir id)
+                (try (java.nio.file.Files/createFile
+                      (.toPath (io/file (lock-path dir id)))
+                      (make-array java.nio.file.attribute.FileAttribute 0))
+                     id
+                     (catch java.nio.file.FileAlreadyExistsException _ nil)))]
+      (if got got (recur (inc n))))))
+(defn release-id [dir id] (.delete (io/file (lock-path dir id))) nil)
+
+(defn slugify [title]
+  (let [base (-> (str/lower-case (str title))
+                 (str/replace #"[^a-z0-9]+" "_")
+                 (str/replace #"^_+" "")
+                 (str/replace #"_+$" ""))
+        capped (if (> (count base) 60) (subs base 0 60) base)
+        clean (str/replace capped #"_+$" "")]
+    (if (str/blank? clean) "untitled" clean)))
+
 ;; --- portable defaults ------------------------------------------------------
 
 (defn threads-dir []

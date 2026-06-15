@@ -57,6 +57,34 @@
   (chelonia.rt/write-log log as)
   (println (str "imported -> " (count as) " claims -> " log))))))
 
+(defn- ^String dq [^String s]
+  (str "\"" (str/replace s "\"" "\\\"") "\""))
+
+(defn- ^Boolean ctrl? [^String s]
+  (or (str/includes? s "\n") (str/includes? s "\r")))
+
+(defn- ^String capture-md [^String id ^String title ^String owner ^String today]
+  (str "---\n" "id: " id "\n" "title: " (dq title) "\n" "state: ready\n" "owner: " (dq owner) "\n" "source: self\n" "created_by: you\n" "created_at: " today "\n" "updated_at: " today "\n" "---\n\n" "## Claim\n\n" title "\n\n" "## Log\n\n" today " — captured via `chelonia capture`.\n"))
+
+(defn cmd-capture [^String threads-dir ^String log ^String title ^String owner]
+  (cond
+  (or (str/blank? title) (ctrl? title)) (println "usage: capture <title> [owner]   (title must be a non-empty single line)")
+  (ctrl? owner) (println "capture: owner must be a single line")
+  :else (do
+  (chelonia.rt/ensure-dir threads-dir)
+  (let [id (chelonia.rt/reserve-id threads-dir)
+   slug (chelonia.rt/slugify title)
+   today (chelonia.rt/today-iso)
+   path (str threads-dir "/" id "-" slug ".md")]
+  (chelonia.rt/spit-file path (capture-md id title owner today))
+  (chelonia.rt/release-id threads-dir id)
+  (let [as (imp/load-corpus threads-dir)
+   file-sigs (sig-member-map (:claims (fold/fold as)))
+   lost (pending-coord-count log file-sigs)]
+  (if (> lost 0) (println (str "captured -> " path "\n" "  NOT imported: " lost " pending coordinator write(s) in the log. " "Re-run `import` (folds in the capture AND those writes), or `import --force`.")) (do
+  (chelonia.rt/write-log log as)
+  (println (str "captured -> thread:" id "  " title "  [ready/" owner "]\n" "  file:     " path "\n" "  imported: " (count as) " claims. Next: chelonia tell " id " <pred> <value>")))))))))
+
 (defn cmd-export [^String threads-dir ^String log ^String out-dir]
   (let [log-claims (:claims (fold/fold (chelonia.rt/read-log log)))
    file-claims (:claims (fold/fold (imp/load-corpus threads-dir)))]
@@ -240,6 +268,7 @@
   (cond
   (= cmd "import") (cmd-import threads-dir log (and (> (count args) 1) (= (nth args 1) "--force")))
   (= cmd "export") (if (> (count args) 1) (cmd-export threads-dir log (nth args 1)) (println "usage: export <out-dir>"))
+  (= cmd "capture") (if (>= (count args) 2) (cmd-capture threads-dir log (nth args 1) (if (>= (count args) 3) (nth args 2) "personal")) (println "usage: capture <title> [owner]"))
   (= cmd "ready") (cmd-ready log)
   (= cmd "blocked") (cmd-blocked log)
   (= cmd "leverage") (cmd-leverage log)
@@ -255,7 +284,7 @@
   (= cmd "merge") (if (>= (count args) 3) (cmd-merge log (nth args 1) (nth args 2)) (println "usage: merge <from-entity> <to-entity>"))
   (= cmd "tell") (if (>= (count args) 4) (cmd-tell "assert" (nth args 1) (nth args 2) (nth args 3)) (println "usage: tell <id> <pred> <value>"))
   (= cmd "untell") (if (>= (count args) 4) (cmd-tell "retract" (nth args 1) (nth args 2) (nth args 3)) (println "usage: untell <id> <pred> <value>"))
-  :else (println "usage: import | export <out-dir> | ready | blocked | leverage | next | agenda | plate | audit | doctor | watch | validate | show <id> | set <id> <pred> <value> | tell <id> <pred> <value> | untell <id> <pred> <value> | merge <from> <to>"))))
+  :else (println "usage: capture <title> [owner] | import | export <out-dir> | ready | blocked | leverage | next | agenda | plate | audit | doctor | watch | validate | show <id> | set <id> <pred> <value> | tell <id> <pred> <value> | untell <id> <pred> <value> | merge <from> <to>"))))
 
 (defn -main [& args]
   (run (vec args) (chelonia.rt/threads-dir) (chelonia.rt/log-path)))

@@ -23,6 +23,9 @@
 (declare-extern chelonia.rt/log-path [-> String])
 (declare-extern chelonia.rt/ensure-dir [String -> Nil])
 (declare-extern chelonia.rt/spit-file [String String -> Nil])
+(declare-extern chelonia.rt/reserve-id [String -> String])
+(declare-extern chelonia.rt/release-id [String String -> Nil])
+(declare-extern chelonia.rt/slugify [String -> String])
 (declare-extern chelonia.rt/coord-version [Int -> Int])
 (declare-extern chelonia.rt/coord-assert [Int String String String Int -> String])
 (declare-extern chelonia.rt/coord-retract [Int String String String Int -> String])
@@ -75,6 +78,64 @@
                     "files (would be lost). Run `export` first, or `import --force`."))
       (do (chelonia.rt/write-log log as)
           (println (str "imported -> " (count as) " claims -> " log))))))
+
+;; --- terminal capture: a one-line thought -> a ready thread -> folded --------
+;; Sugar for "write the Markdown I'd write anyway, then import" — the capture
+;; surface the hero promises. `dq` double-quotes a scalar as YAML (import's
+;; parser unquotes it), so colons/quotes in title or owner are inert. Newlines
+;; are rejected upstream: the flat frontmatter parser is line-oriented, so an
+;; embedded LF would split the field and inject/clobber claims (frontmatter
+;; injection) — dq cannot defend a line-oriented parser, only single-line input.
+(defn- dq [s :- String] :- String
+  (str "\"" (str/replace s "\"" "\\\"") "\""))
+
+(defn- ctrl? [s :- String] :- Bool
+  (or (str/includes? s "\n") (str/includes? s "\r")))
+
+(defn- capture-md [id :- String title :- String owner :- String today :- String] :- String
+  (str "---\n"
+       "id: " id "\n"
+       "title: " (dq title) "\n"
+       "state: ready\n"
+       "owner: " (dq owner) "\n"
+       "source: self\n"
+       "created_by: you\n"
+       "created_at: " today "\n"
+       "updated_at: " today "\n"
+       "---\n\n"
+       "## Claim\n\n" title "\n\n"
+       "## Log\n\n" today " — captured via `chelonia capture`.\n"))
+
+(defn cmd-capture [threads-dir :- String log :- String title :- String owner :- String] :- Nil
+  (cond
+    [(or (str/blank? title) (ctrl? title))
+     (println "usage: capture <title> [owner]   (title must be a non-empty single line)")]
+    [(ctrl? owner)
+     (println "capture: owner must be a single line")]
+    [:else
+     (do
+       (chelonia.rt/ensure-dir threads-dir)
+       ;; reserve-id atomically claims a free id (unique by id, not filename)
+       ;; even against a same-second concurrent capture; release after writing.
+       (let [id (chelonia.rt/reserve-id threads-dir)
+             slug (chelonia.rt/slugify title)
+             today (chelonia.rt/today-iso)
+             path (str threads-dir "/" id "-" slug ".md")]
+         (chelonia.rt/spit-file path (capture-md id title owner today))
+         (chelonia.rt/release-id threads-dir id)
+         ;; fold the new file in, guarded exactly like `import`: refuse to
+         ;; clobber pending coordinator writes (the file stays on disk regardless).
+         (let [as (imp/load-corpus threads-dir)
+               file-sigs (sig-member-map (:claims (fold/fold as)))
+               lost (pending-coord-count log file-sigs)]
+           (if (> lost 0)
+             (println (str "captured -> " path "\n"
+                           "  NOT imported: " lost " pending coordinator write(s) in the log. "
+                           "Re-run `import` (folds in the capture AND those writes), or `import --force`."))
+             (do (chelonia.rt/write-log log as)
+                 (println (str "captured -> thread:" id "  " title "  [ready/" owner "]\n"
+                               "  file:     " path "\n"
+                               "  imported: " (count as) " claims. Next: chelonia tell " id " <pred> <value>")))))))]))
 
 ;; Inverse of import: fold the log -> write each thread as markdown into out-dir.
 ;; SAFETY (concurrent agents): refuse if threads/ holds edits not yet in the log —
@@ -342,6 +403,10 @@
        (if (> (count args) 1)
          (cmd-export threads-dir log (nth args 1))
          (println "usage: export <out-dir>"))]
+      [(= cmd "capture")
+       (if (>= (count args) 2)
+         (cmd-capture threads-dir log (nth args 1) (if (>= (count args) 3) (nth args 2) "personal"))
+         (println "usage: capture <title> [owner]"))]
       [(= cmd "ready")    (cmd-ready log)]
       [(= cmd "blocked")  (cmd-blocked log)]
       [(= cmd "leverage") (cmd-leverage log)]
@@ -369,7 +434,7 @@
        (if (>= (count args) 4)
          (cmd-tell "retract" (nth args 1) (nth args 2) (nth args 3))
          (println "usage: untell <id> <pred> <value>"))]
-      [:else (println "usage: import | export <out-dir> | ready | blocked | leverage | next | agenda | plate | audit | doctor | watch | validate | show <id> | set <id> <pred> <value> | tell <id> <pred> <value> | untell <id> <pred> <value> | merge <from> <to>")])))
+      [:else (println "usage: capture <title> [owner] | import | export <out-dir> | ready | blocked | leverage | next | agenda | plate | audit | doctor | watch | validate | show <id> | set <id> <pred> <value> | tell <id> <pred> <value> | untell <id> <pred> <value> | merge <from> <to>")])))
 
 (defn -main [& args] :- Nil
   (run (vec args) (chelonia.rt/threads-dir) (chelonia.rt/log-path)))

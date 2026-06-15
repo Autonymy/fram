@@ -1,9 +1,9 @@
 # Chelonia
 
 **Thought in, structure out — with almost no friction in between.** I capture an
-intention the moment it lands: a thread is just Markdown — a little frontmatter,
-some prose — *a task, a project, "book the flight."* Chelonia folds those threads
-into a queryable dependency graph, and from the terminal tells me what's *ready*,
+intention the moment it lands — `chelonia capture "book the flight"`, or just a
+new Markdown file — *a task, a project, a chore.* Chelonia folds those threads
+into a queryable dependency graph and, from the terminal, tells me what's *ready*,
 what's *blocked*, and which boring keystone unlocks the most progress. The board
 is **derived** from that graph, never hand-maintained — so it can't quietly rot
 the way every other PM tool does.
@@ -165,6 +165,7 @@ bin/chelonia leverage        # the keystone a flat list can't surface
 export CHELONIA_THREADS=/path/to/your/threads
 export CHELONIA_LOG=/path/to/your/claims.log
 bin/chelonia import
+bin/chelonia capture "book the flight"   # a thought -> a ready thread, folded into the graph
 bin/chelonia next
 
 # 4. (Optional) the warm, multi-agent-safe daemon
@@ -173,8 +174,9 @@ bin/chelonia tell <id> state done    # writes go through the coordinator (serial
 bin/chelonia ready                   # warm ~1ms read from the in-memory index
 ```
 
-Full command surface: `import · export · ready · blocked · leverage · next ·
-agenda · plate · show <id> · validate · audit · merge · tell · untell · doctor`.
+Full command surface: `capture <title> · import · export · ready · blocked ·
+leverage · next · agenda · plate · show <id> · validate · audit · merge · tell ·
+untell · doctor`.
 
 ## Built on Beagle
 
