@@ -11,9 +11,11 @@
         '[java.io BufferedReader InputStreamReader OutputStreamWriter BufferedWriter])
 
 ;; ---- minimal store essentials (shared shape with chelonia.clj) ----
-(def single-valued #{"title" "state" "owner" "lead" "driver" "source" "part_of"
-                     "do_on" "valid_until" "estimate_hours" "created_at" "updated_at" "name" "body"})
-(def valid-states #{"draft" "ready" "active" "done" "canceled"})
+;; MUST match chelonia.kernel/single-valued (claim-native model: no `state`;
+;; lifecycle facts committed/outcome/abandoned are single-valued).
+(def single-valued #{"title" "owner" "lead" "driver" "source" "part_of"
+                     "do_on" "valid_until" "estimate_hours" "created_at" "updated_at" "name" "body"
+                     "created_by" "committed" "outcome" "abandoned" "superseded_by" "merged_into"})
 
 (defn q [claims & {:keys [l p]}]
   (filter (fn [[cl cp _]] (and (or (nil? l) (= l cl)) (or (nil? p) (= p cp)))) claims))
@@ -43,25 +45,8 @@
 (defn thread-ids [claims]
   (->> claims (map first) (filter #(str/starts-with? % "thread:")) distinct set))
 
-;; Full obligation rule set — unified with chelonia.clj's CLI. (P3 finding: the
-;; daemon previously enforced only invalid-state + cycles, a strict subset of
-;; the CLI; it now matches — missing-entity, canceled-dep, part_of-missing, and
-;; active-without-driver are enforced in the live serialized commit path.)
-(defn violations [claims te]
-  (let [v (atom [])
-        add #(swap! v conj %)
-        st  (one claims te "state")
-        ids (thread-ids claims)]
-    (when (and st (not (valid-states st))) (add (str "invalid state '" st "'")))
-    (doseq [d (many claims te "depends_on")]
-      (when-not (ids d) (add (str "depends_on references missing entity " d)))
-      (when (= "canceled" (one claims d "state")) (add (str "depends_on points at canceled " d))))
-    (when-let [pa (one claims te "part_of")]
-      (when-not (ids pa) (add (str "part_of references missing entity " pa))))
-    (when (and (= st "active") (nil? (one claims te "driver"))) (add "active thread has no driver"))
-    (when (cycle? claims "depends_on" te) (add "depends_on cycle"))
-    (when (cycle? claims "part_of" te) (add "part_of cycle"))
-    @v))
+;; Obligation rule-checking lives in chelonia.kernel/violations (single source of
+;; truth) — commit!/commit-retract! call (ck/violations (claims->vec cand) te).
 
 ;; ---- log io (no fsync in bb; the JVM daemon adds it in P4) ----
 (defn append-line! [path m]

@@ -118,6 +118,9 @@
 (defn log-path []
   (or (System/getenv "CHELONIA_LOG")
       (str (System/getProperty "user.dir") "/claims.log")))
+(defn time-dir []
+  (or (System/getenv "CHELONIA_TIME_DIR")
+      (str (System/getProperty "user.dir") "/time")))
 
 ;; capture provenance: generic fallbacks here; a consumer (e.g. the life-os
 ;; wrapper) exports its own conventions via these env vars.
@@ -195,3 +198,45 @@
           (println line)
           (recur)))))
   nil)
+
+;; --- time module runtime (ported from los.rt for `chelonia time`) -----------
+
+(defn error-exit [msg]
+  (binding [*out* *err*] (println (str "error: " msg)))
+  (System/exit 1))
+
+(defn now-iso []
+  (.format (java.time.LocalDateTime/now)
+           (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd'T'HH:mm:ss")))
+
+(defn iso-to-seconds [s]
+  (let [normalized (if (= 16 (count s)) (str s ":00") s)]
+    (.toEpochSecond (.atZone (java.time.LocalDateTime/parse normalized)
+                             (java.time.ZoneId/systemDefault)))))
+
+(defn this-week-dates []
+  (let [today (java.time.LocalDate/now)
+        dow (.getValue (.getDayOfWeek today))]
+    (mapv (fn [i] (.toString (.plusDays today (- i (dec dow))))) (vec (range 0 7)))))
+
+(defn file-exists [p] (.exists (io/file p)))
+(defn create-dirs [p] (.mkdirs (io/file p)) nil)
+(defn delete-file [p] (when (.exists (io/file p)) (.delete (io/file p))) nil)
+(defn spit-append [p content] (spit p content :append true) nil)
+(defn getenv [nm] (System/getenv nm))
+(defn filter-digits [s] (str/replace s #"[^0-9]" ""))
+(defn is-iso-datetime-19 [s]
+  (boolean (and (= 19 (count s)) (re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}" s))))
+(defn is-iso-datetime-16 [s]
+  (boolean (and (= 16 (count s)) (re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}" s))))
+(defn repeat-str [s n] (apply str (repeat (max 0 (long n)) s)))
+
+;; Clockify HTTP — lazy-resolve babashka.http-client so the AOT/native path
+;; never references it at compile time (network/out-of-scope there).
+(defn http-get [url api-key]
+  (or (:body ((requiring-resolve 'babashka.http-client/get)
+              url {:headers {"X-Api-Key" api-key}})) ""))
+(defn http-post [url api-key body]
+  (or (:body ((requiring-resolve 'babashka.http-client/post)
+              url {:headers {"X-Api-Key" api-key "Content-Type" "application/json"}
+                   :body body})) ""))
