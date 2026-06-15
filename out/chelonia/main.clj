@@ -37,16 +37,27 @@
 
 (defn agendaitem-do_on [r] (:do_on r))
 
-(defn cmd-import [^String threads-dir ^String log]
-  (let [as (imp/load-corpus threads-dir)]
-  (chelonia.rt/write-log log as)
-  (println (str "imported -> " (count as) " claims -> " log))))
-
 (defn- ^String claim-sig [c]
   (str (:l c) "|" (:p c) "|" (:r c)))
 
 (defn- sig-set [claims]
   (vec (sort (mapv claim-sig claims))))
+
+(defn- sig-member-map [claims]
+  (reduce (fn [m c] (assoc m (claim-sig c) true)) {} claims))
+
+(defn- only-in-count [a b]
+  (let [bm (sig-member-map b)]
+  (count (filterv (fn [c] (nil? (get bm (claim-sig c)))) a))))
+
+(defn cmd-import [^String threads-dir ^String log ^Boolean force]
+  (let [as (imp/load-corpus threads-dir)
+   file-claims (:claims (fold/fold as))
+   log-claims (:claims (fold/fold (chelonia.rt/read-log log)))
+   lost (only-in-count log-claims file-claims)]
+  (if (and (> lost 0) (not force)) (println (str "REFUSING import: " lost " claim(s) are in the log but not the files " "(pending coordinator writes would be lost). Run `export` first to regenerate " "the files, or `import --force` to overwrite.")) (do
+  (chelonia.rt/write-log log as)
+  (println (str "imported -> " (count as) " claims -> " log))))))
 
 (defn cmd-export [^String threads-dir ^String log ^String out-dir]
   (let [log-claims (:claims (fold/fold (chelonia.rt/read-log log)))
@@ -220,7 +231,7 @@
 (defn run [args ^String threads-dir ^String log]
   (let [cmd (if (empty? args) "" (first args))]
   (cond
-  (= cmd "import") (cmd-import threads-dir log)
+  (= cmd "import") (cmd-import threads-dir log (and (> (count args) 1) (= (nth args 1) "--force")))
   (= cmd "export") (if (> (count args) 1) (cmd-export threads-dir log (nth args 1)) (println "usage: export <out-dir>"))
   (= cmd "ready") (cmd-ready log)
   (= cmd "blocked") (cmd-blocked log)
