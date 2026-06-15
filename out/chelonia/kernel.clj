@@ -1,11 +1,7 @@
 (ns chelonia.kernel
   (:require [clojure.string :as str]))
 
-(def single-valued ["title" "state" "owner" "lead" "driver" "source" "part_of" "do_on" "valid_until" "estimate_hours" "created_at" "updated_at" "name" "body" "created_by" "slug" "superseded_by" "canceled_reason" "merged_into"])
-
-(def valid-states ["draft" "ready" "active" "done" "canceled"])
-
-(def terminal-states ["done" "canceled"])
+(def single-valued ["title" "owner" "lead" "driver" "source" "part_of" "do_on" "valid_until" "estimate_hours" "created_at" "updated_at" "name" "body" "created_by" "committed" "outcome" "abandoned" "superseded_by" "merged_into"])
 
 (defn ^Boolean vec-contains? [xs ^String s]
   (loop [r xs]
@@ -39,14 +35,13 @@
   (mapv (fn [c] (:r c)) (q-lp claims l p)))
 
 (defn ^Boolean terminal? [claims ^String te]
-  (let [st (one claims te "state")]
-  (if (some? st) (vec-contains? terminal-states st) false)))
+  (or (some? (one claims te "outcome")) (some? (one claims te "abandoned"))))
 
 (defn- uniq [xs]
   (reduce (fn [acc x] (if (vec-contains? acc x) acc (conj acc x))) [] xs))
 
 (defn thread-ids [claims]
-  (uniq (filterv (fn [s] (str/starts-with? s "thread:")) (mapv (fn [c] (:l c)) claims))))
+  (filterv (fn [s] (some? (one claims s "title"))) (uniq (mapv (fn [c] (:l c)) claims))))
 
 (defn- drop-lp [claims ^String l ^String p]
   (filterv (fn [x] (not (and (= (:l x) l) (= (:p x) p)))) claims))
@@ -73,17 +68,15 @@
   :else (recur (vec (concat (rest front) (succ (first front)))) (conj seen (first front)))))))
 
 (defn violations [claims ^String te]
-  (let [st (one claims te "state")
-   ids (thread-ids claims)
-   v1 (if (and (some? st) (not (vec-contains? valid-states st))) [(str "invalid state '" st "'")] [])
+  (let [ids (thread-ids claims)
    v2 (reduce (fn [acc d] (let [a (if (not (vec-contains? ids d)) (conj acc (str "depends_on references missing entity " d)) acc)]
-  (if (and (not (terminal? claims te)) (= "canceled" (one claims d "state"))) (conj a (str "depends_on points at canceled " d)) a))) v1 (many claims te "depends_on"))
+  (if (and (not (terminal? claims te)) (some? (one claims d "abandoned"))) (conj a (str "depends_on points at abandoned " d)) a))) [] (many claims te "depends_on"))
    pa (one claims te "part_of")
    v3 (if (and (some? pa) (not (vec-contains? ids pa))) (conj v2 (str "part_of references missing entity " pa)) v2)
-   v4 (if (and (= st "active") (nil? (one claims te "driver"))) (conj v3 "active thread has no driver") v3)
-   v5 (if (cycle? claims "depends_on" te) (conj v4 "depends_on cycle") v4)
-   v6 (if (cycle? claims "part_of" te) (conj v5 "part_of cycle") v5)]
-  v6))
+   v5 (if (cycle? claims "depends_on" te) (conj v3 "depends_on cycle") v3)
+   v6 (if (cycle? claims "part_of" te) (conj v5 "part_of cycle") v5)
+   v7 (reduce (fn [acc rt] (if (not (vec-contains? ids rt)) (conj acc (str "relates_to references missing entity " rt)) acc)) v6 (many claims te "relates_to"))]
+  v7))
 
 (defrecord Index [single bypred subjects revdep])
 
@@ -110,11 +103,10 @@
   (get (:bypred idx) (str l "\u0001" p) []))
 
 (defn thread-ids-i [^Index idx]
-  (filterv (fn [s] (str/starts-with? s "thread:")) (:subjects idx)))
+  (filterv (fn [s] (some? (one-i idx s "title"))) (:subjects idx)))
 
 (defn ^Boolean terminal-i? [^Index idx ^String te]
-  (let [st (one-i idx te "state")]
-  (if (some? st) (vec-contains? terminal-states st) false)))
+  (or (some? (one-i idx te "outcome")) (some? (one-i idx te "abandoned"))))
 
 (defn dependents-i [^Index idx ^String te]
   (get (:revdep idx) te []))
@@ -131,14 +123,12 @@
   :else (recur (vec (concat (rest front) (succ (first front)))) (conj seen (first front)))))))
 
 (defn violations-i [^Index idx ^String te]
-  (let [st (one-i idx te "state")
-   term? (terminal-i? idx te)
-   v1 (if (and (some? st) (not (vec-contains? valid-states st))) [(str "invalid state '" st "'")] [])
-   v2 (reduce (fn [acc d] (let [a (if (nil? (one-i idx d "state")) (conj acc (str "depends_on references missing entity " d)) acc)]
-  (if (and (not term?) (= "canceled" (one-i idx d "state"))) (conj a (str "depends_on points at canceled " d)) a))) v1 (many-i idx te "depends_on"))
+  (let [term? (terminal-i? idx te)
+   v2 (reduce (fn [acc d] (let [a (if (nil? (one-i idx d "title")) (conj acc (str "depends_on references missing entity " d)) acc)]
+  (if (and (not term?) (some? (one-i idx d "abandoned"))) (conj a (str "depends_on points at abandoned " d)) a))) [] (many-i idx te "depends_on"))
    pa (one-i idx te "part_of")
-   v3 (if (and (some? pa) (nil? (one-i idx pa "state"))) (conj v2 (str "part_of references missing entity " pa)) v2)
-   v4 (if (and (= st "active") (nil? (one-i idx te "driver"))) (conj v3 "active thread has no driver") v3)
-   v5 (if (cycle-i? idx "depends_on" te) (conj v4 "depends_on cycle") v4)
-   v6 (if (cycle-i? idx "part_of" te) (conj v5 "part_of cycle") v5)]
-  v6))
+   v3 (if (and (some? pa) (nil? (one-i idx pa "title"))) (conj v2 (str "part_of references missing entity " pa)) v2)
+   v5 (if (cycle-i? idx "depends_on" te) (conj v3 "depends_on cycle") v3)
+   v6 (if (cycle-i? idx "part_of" te) (conj v5 "part_of cycle") v5)
+   v7 (reduce (fn [acc rt] (if (nil? (one-i idx rt "title")) (conj acc (str "relates_to references missing entity " rt)) acc)) v6 (many-i idx te "relates_to"))]
+  v7))

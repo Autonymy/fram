@@ -40,7 +40,7 @@
   (let [t (k/one-i idx te "title")] (if (some? t) t "")))
 
 (defn- short-id [te :- String] :- String
-  (if (str/starts-with? te "thread:") (subs te 7) te))
+  (if (str/starts-with? te "@") (subs te 1) te))
 
 (defn- trunc [s :- String n :- Int] :- String
   (if (> (count s) n) (str (subs s 0 (- n 1)) "…") s))
@@ -80,44 +80,35 @@
       (do (chelonia.rt/write-log log as)
           (println (str "imported -> " (count as) " claims -> " log))))))
 
-;; --- terminal capture: a one-line thought -> a ready thread -> folded --------
-;; Sugar for "write the Markdown I'd write anyway, then import" — the capture
-;; surface the hero promises. Scalars go through export's YAML-correct
-;; `yaml-scalar` (single-quote on hazard, '' doubling), so colons / quotes /
-;; BACKSLASHES are inert for a REAL YAML parser too (los validate), not just
-;; chelonia's naive one — a double-quote escaper that misses `\` would emit a
-;; file chelonia accepts but los validate rejects. Newlines are rejected
-;; upstream: the flat frontmatter parser is line-oriented, so an embedded LF
-;; would split the field and inject/clobber claims — quoting can't defend a
-;; line-oriented parser, only single-line input can.
+;; --- terminal capture: a one-line thought -> a thread -> folded -------------
+;; Claim-first: build the new thread's claims and render them through export's
+;; ONE renderer (no bespoke template, no second quoter). Provenance comes from
+;; CHELONIA_SOURCE/AUTHOR/LEAD/DRIVER/PROPOSED_BY (the life-os wrapper supplies
+;; its conventions); author/lead/driver/proposed_by are person refs (@handle).
+;; A captured thought is a committed intention by default (committed = today).
 (defn- ctrl? [s :- String] :- Bool
   (or (str/includes? s "\n") (str/includes? s "\r")))
 
-;; an optional frontmatter line — omitted entirely when the value is blank
-(defn- fm-opt-line [k :- String v :- String] :- String
-  (if (str/blank? v) "" (str k ": " (exp/yaml-scalar v) "\n")))
+(defn- add-claim [acc :- (Vec k/Claim) te :- String p :- String v :- String] :- (Vec k/Claim)
+  (if (str/blank? v) acc (conj acc (k/->Claim te p v))))
 
-;; Provenance defaults are generic (self/you); a consumer overrides them via
-;; CHELONIA_SOURCE/AUTHOR/LEAD/DRIVER/PROPOSED_BY (the life-os wrapper sets its
-;; own conventions so a terminal capture validates without hand-fixing). Field
-;; order follows the threads manual's canonical order.
-(defn- capture-md [id :- String title :- String owner :- String source :- String author :- String
-                   lead :- String driver :- String proposed :- String today :- String] :- String
-  (str "---\n"
-       "id: " id "\n"
-       "title: " (exp/yaml-scalar title) "\n"
-       "state: ready\n"
-       "owner: " (exp/yaml-scalar owner) "\n"
-       (fm-opt-line "lead" lead)
-       (fm-opt-line "driver" driver)
-       "source: " (exp/yaml-scalar source) "\n"
-       (fm-opt-line "proposed_by" proposed)
-       "created_by: " (exp/yaml-scalar author) "\n"
-       "created_at: " today "\n"
-       "updated_at: " today "\n"
-       "---\n\n"
-       "## Claim\n\n" title "\n\n"
-       "## Log\n\n" today " — captured via `chelonia capture`.\n"))
+(defn- ref-or-blank [v :- String] :- String
+  (if (str/blank? v) "" (str "@" v)))
+
+(defn- capture-claims [te :- String title :- String owner :- String source :- String
+                       author :- String lead :- String driver :- String proposed :- String
+                       today :- String] :- (Vec k/Claim)
+  (let [c (add-claim [] te "title" title)
+        c (add-claim c te "owner" owner)
+        c (add-claim c te "source" source)
+        c (add-claim c te "created_by" (ref-or-blank author))
+        c (add-claim c te "lead" (ref-or-blank lead))
+        c (add-claim c te "driver" (ref-or-blank driver))
+        c (add-claim c te "proposed_by" (ref-or-blank proposed))
+        c (add-claim c te "created_at" today)
+        c (add-claim c te "updated_at" today)
+        c (add-claim c te "committed" today)]
+    c))
 
 (defn cmd-capture [threads-dir :- String log :- String title :- String owner :- String] :- Nil
   (let [source (chelonia.rt/getenv-or "CHELONIA_SOURCE" "self")
@@ -141,8 +132,10 @@
        (let [id (chelonia.rt/reserve-id threads-dir)
              slug (chelonia.rt/slugify title)
              today (chelonia.rt/today-iso)
+             te (str "@" id)
              path (str threads-dir "/" id "-" slug ".md")]
-         (chelonia.rt/spit-file path (capture-md id title owner source author lead driver proposed today))
+         (chelonia.rt/spit-file path
+           (exp/thread-md (capture-claims te title owner source author lead driver proposed today) te))
          (chelonia.rt/release-id threads-dir id)
          ;; fold the new file in, guarded exactly like `import`: refuse to
          ;; clobber pending coordinator writes (the file stays on disk regardless).
@@ -154,7 +147,7 @@
                            "  NOT imported: " lost " pending coordinator write(s) in the log. "
                            "Re-run `import` (folds in the capture AND those writes), or `import --force`."))
              (do (chelonia.rt/write-log log as)
-                 (println (str "captured -> thread:" id "  " title "  [ready/" owner "]\n"
+                 (println (str "captured -> " te "  " title "  [owner: " owner "]\n"
                                "  file:     " path "\n"
                                "  imported: " (count as) " claims. Next: chelonia tell " id " <pred> <value>")))))))])))
 
@@ -172,26 +165,19 @@
             tes (k/thread-ids-i idx)]
         (chelonia.rt/ensure-dir out-dir)
         (doseq [te tes]
-          (chelonia.rt/spit-file (str out-dir "/" (exp/thread-filename idx te))
-                                 (exp/thread-md idx te)))
+          (let [title (k/one-i idx te "title")
+                fname (str (subs te 1) "-"
+                           (chelonia.rt/slugify (if (some? title) title "untitled")) ".md")]
+            (chelonia.rt/spit-file (str out-dir "/" fname) (exp/thread-md log-claims te))))
         (println (str "exported " (count tes) " threads -> " out-dir))))))
 
-;; Entity-drift audit: near-duplicate tags / repo path-form collisions / long-tail.
+;; Entity-drift audit: repo path-form collisions (tags retired with relates_to).
 (defn cmd-audit [log :- String] :- Nil
   (let [idx (k/build-index (:claims (fold/fold (chelonia.rt/read-log log))))
-        td (audit/tag-drift idx)
-        rd (audit/repo-drift idx)
-        lt (audit/long-tail-tags idx)]
-    (println (str "TAG DRIFT — " (count td) " normalized-collision group(s):"))
-    (doseq [g td]
-      (println (str "  " (:norm g) ": "
-                    (str/join ", " (mapv (fn [f :- String] :- String (subs f 4)) (:forms g))))))
+        rd (audit/repo-drift idx)]
     (println (str "REPO DRIFT — " (count rd) " group(s):"))
     (doseq [g rd]
-      (println (str "  " (:norm g) ": "
-                    (str/join ", " (mapv (fn [f :- String] :- String (subs f 5)) (:forms g))))))
-    (println (str "LONG-TAIL TAGS (used once) — " (count lt) ":"))
-    (println (str "  " (str/join " " (mapv (fn [t :- String] :- String (subs t 4)) lt))))))
+      (println (str "  " (:norm g) ": " (str/join ", " (:forms g)))))))
 
 (defn cmd-ready [log :- String] :- Nil
   (let [idx (k/build-index (:claims (fold/fold (chelonia.rt/read-log log))))
@@ -239,7 +225,7 @@
 (defn cmd-show [log :- String id :- String] :- Nil
   (let [f (fold/fold (chelonia.rt/read-log log))
         claims (:claims f)
-        te (str "thread:" id)
+        te (str "@" id)
         cs (k/q-by-l claims te)]
     (if (empty? cs)
       (println (str "no claims for " te))
@@ -259,7 +245,7 @@
                                [(= doo today) 3]
                                [:else 0])
                              0)
-                       mom (if (= (k/one-i idx te "state") "active") 2 0)]
+                       mom (if (some? (k/one-i idx te "driver")) 2 0)]
                    (->NextItem te (+ (* 3 lev) (+ urg mom)))))
                (proj/ready idx))
         ranked (vec (take 12 (sort-by (fn [it :- NextItem] :- Int (- 0 (:score it))) items)))]
@@ -292,25 +278,42 @@
     (println (str "UPCOMING (" (count upcoming) ")"))
     (doseq [it upcoming] (println (str "  " (:do_on it) "  " (short-id (:te it)) "  " (trunc (title-of idx (:te it)) 44))))))
 
+;; lifecycle buckets are DERIVED, not a stored enum:
+;;   active  = has a driver        ready  = committed, unblocked, no driver
+;;   blocked = committed, blocked  draft  = not committed
+(defn- plate-group [idx :- k/Index label :- String grp :- (Vec String)] :- Nil
+  (when (not (empty? grp))
+    (println (str "\n" label " (" (count grp) ")"))
+    (doseq [te grp]
+      (println (str "  " (short-id te) "  " (trunc (title-of idx te) 52))))))
+
 (defn cmd-plate [log :- String] :- Nil
   (let [idx (k/build-index (:claims (fold/fold (chelonia.rt/read-log log))))
         nonterm (filterv (fn [te :- String] :- Bool (not (k/terminal-i? idx te)))
-                         (k/thread-ids-i idx))]
+                         (k/thread-ids-i idx))
+        active-g (filterv (fn [te :- String] :- Bool (some? (k/one-i idx te "driver"))) nonterm)
+        ready-g (filterv (fn [te :- String] :- Bool
+                           (and (some? (k/one-i idx te "committed"))
+                                (and (nil? (k/one-i idx te "driver")) (not (proj/blocked? idx te)))))
+                         nonterm)
+        blocked-g (filterv (fn [te :- String] :- Bool
+                             (and (some? (k/one-i idx te "committed"))
+                                  (and (nil? (k/one-i idx te "driver")) (proj/blocked? idx te))))
+                           nonterm)
+        draft-g (filterv (fn [te :- String] :- Bool (nil? (k/one-i idx te "committed"))) nonterm)]
     (println (str "ON YOUR PLATE — " (count nonterm) " open"))
-    (doseq [st ["active" "ready" "draft"]]
-      (let [grp (filterv (fn [te :- String] :- Bool (= (k/one-i idx te "state") st)) nonterm)]
-        (when (not (empty? grp))
-          (println (str "\n" st " (" (count grp) ")"))
-          (doseq [te grp]
-            (println (str "  " (short-id te) "  " (trunc (title-of idx te) 52)))))))))
+    (plate-group idx "active" active-g)
+    (plate-group idx "ready" ready-g)
+    (plate-group idx "blocked" blocked-g)
+    (plate-group idx "draft" draft-g)))
 
 ;; Single-process write path: read -> fold -> apply candidate -> validate ->
 ;; append. (The concurrent multi-agent write path is chelonia.coord.)
 (defn cmd-set [log :- String id :- String pred :- String value :- String] :- Nil
   (let [f (fold/fold (chelonia.rt/read-log log))
         claims (:claims f)
-        te (str "thread:" id)
-        rv (if (or (= pred "depends_on") (= pred "part_of")) (str "thread:" value) value)
+        te (str "@" id)
+        rv (if (or (= pred "depends_on") (= pred "part_of") (= pred "relates_to")) (str "@" value) value)
         cand (k/apply-assert claims (k/->Claim te pred rv))
         viol (k/violations cand te)]
     (if (not (empty? viol))
@@ -362,8 +365,8 @@
       resp)))
 
 (defn cmd-tell [op :- String id :- String pred :- String value :- String] :- Nil
-  (let [te (str "thread:" id)
-        rv (if (or (= pred "depends_on") (= pred "part_of")) (str "thread:" value) value)
+  (let [te (str "@" id)
+        rv (if (or (= pred "depends_on") (= pred "part_of") (= pred "relates_to")) (str "@" value) value)
         resp (tell-retry (chelonia.rt/coord-port) op te pred rv 5)]
     (cond
       [(= resp "nodaemon")

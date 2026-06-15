@@ -2,7 +2,7 @@
   (:require [chelonia.kernel :as k]))
 
 (defn incomplete-deps [idx ^String te]
-  (filterv (fn [d] (and (some? (k/one-i idx d "state")) (not (k/terminal-i? idx d)))) (k/many-i idx te "depends_on")))
+  (filterv (fn [d] (and (some? (k/one-i idx d "title")) (not (k/terminal-i? idx d)))) (k/many-i idx te "depends_on")))
 
 (defn ^Boolean blocked? [idx ^String te]
   (not (empty? (incomplete-deps idx te))))

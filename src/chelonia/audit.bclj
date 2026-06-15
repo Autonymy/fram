@@ -1,9 +1,9 @@
 #lang beagle/clj
 (ns chelonia.audit
-  "Entity-drift detection over the claim graph: near-duplicate tags (same
-  normalized form), repo path-form collisions, and long-tail single-use tags.
-  Deterministic — the dedup-sweep foundation for entity resolution (P5) and the
-  `los audit` idea (thread 20260527203000) realized in the engine. Pure logic.")
+  "Entity-drift detection over the claim graph: repo path-form collisions (same
+  normalized form under different surface spellings). Tags are gone (relatedness
+  is now a `relates_to` edge to a real thread, which can't drift), so the tag
+  audits retired with them. Pure logic.")
 
 (require chelonia.kernel :as k)
 (require clojure.string :as str)
@@ -18,9 +18,6 @@
                     m (k/many-i idx te pred)))
           {} (k/thread-ids-i idx)))
 
-(defn- norm-tag [v :- String] :- String
-  (str/replace (str/replace (str/lower-case v) "-" "") "_" ""))
-
 (defn- norm-repo [v :- String] :- String
   (let [low (str/lower-case v)]
     (if (str/starts-with? low "~/code/") (subs low 7) low)))
@@ -31,22 +28,11 @@
            (mapv (fn [kk :- String] :- DriftGroup (->DriftGroup kk (get grouped kk [])))
                  (vec (keys grouped)))))
 
-(defn tag-drift [idx :- k/Index] :- (Vec DriftGroup)
-  (let [forms (vec (keys (tally idx "tag")))
-        grouped (reduce (fn [m :- (Map String (Vec String)) t :- String] :- (Map String (Vec String))
-                          (let [kk (norm-tag (subs t 4))]
-                            (assoc m kk (conj (get m kk []) t))))
-                        {} forms)]
-    (collisions forms grouped)))
-
+;; repo values are bare literals now (no `repo:` prefix to strip).
 (defn repo-drift [idx :- k/Index] :- (Vec DriftGroup)
   (let [forms (vec (keys (tally idx "repo")))
         grouped (reduce (fn [m :- (Map String (Vec String)) t :- String] :- (Map String (Vec String))
-                          (let [kk (norm-repo (subs t 5))]
+                          (let [kk (norm-repo t)]
                             (assoc m kk (conj (get m kk []) t))))
                         {} forms)]
     (collisions forms grouped)))
-
-(defn long-tail-tags [idx :- k/Index] :- (Vec String)
-  (let [t (tally idx "tag")]
-    (filterv (fn [tag :- String] :- Bool (= (get t tag 0) 1)) (vec (keys t)))))

@@ -43,13 +43,31 @@
 (defn today-iso [] (str (java.time.LocalDate/now)))
 (defn str-lt? [a b] (neg? (compare a b)))
 
-;; --- terminal capture: id + slug from a one-line title ----------------------
-;; now-id is the YYYYMMDDHHMMSS thread id convention; slugify is its filename
-;; companion (lowercase, non-alnum -> '_', collapsed, trimmed, capped at 60).
+;; split a triple line "<predicate><ws><object...>" into [pred obj]; obj may
+;; contain spaces (it's the rest of the line). Blank/garbage -> [line ""].
+(defn split-kv [line]
+  (let [t (str/trim line)
+        m (re-find #"^(\S+)\s+(.*)$" t)]
+    (if m [(nth m 1) (nth m 2)] [t ""])))
+
+;; --- claim-native triple-file value (de)serialization -----------------------
+;; A claim object in a triple file is either a ref (@id, handled by the caller)
+;; or a literal. Literals are quoted/unquoted via EDN — bulletproof escaping
+;; (the same pr-str/read-string pair the log uses), so no hand-rolled quoter can
+;; ever emit something a real parser rejects.
+(defn edn-quote [s] (pr-str s))
+(defn edn-unquote [s] (edn/read-string s))
+
+;; --- thread id: human-grouped, fixed-width, opaque key ----------------------
+;; 2026-06-15-150040 (yyyy-MM-dd-HHmmss). Dashes for glance-readability; fixed
+;; width so id<->slug splits by position; sorts chronologically as a plain string.
+(defn- fmt-id [n]
+  (let [s (str n)]
+    (str (subs s 0 4) "-" (subs s 4 6) "-" (subs s 6 8) "-" (subs s 8 14))))
 
 (defn now-id []
-  (.format (java.time.LocalDateTime/now)
-           (java.time.format.DateTimeFormatter/ofPattern "yyyyMMddHHmmss")))
+  (fmt-id (.format (java.time.LocalDateTime/now)
+                   (java.time.format.DateTimeFormatter/ofPattern "yyyyMMddHHmmss"))))
 
 ;; The thread id, not the filename, is the entity key — two captures in the same
 ;; second produce distinct filenames (slugs differ) but would COLLIDE on id.
@@ -68,8 +86,9 @@
 ;; captures slip through, silently folding into one entity on import.)
 (defn- lock-path [dir id] (str dir "/." id ".lock"))
 (defn reserve-id [dir]
-  (loop [n (Long/parseLong (now-id))]
-    (let [id (str n)
+  (loop [n (Long/parseLong (.format (java.time.LocalDateTime/now)
+                                    (java.time.format.DateTimeFormatter/ofPattern "yyyyMMddHHmmss")))]
+    (let [id (fmt-id n)
           ;; try returns the id on a clean exclusive create, nil if the id is
           ;; taken or a racer won the lock — recur OUTSIDE the try (recur cannot
           ;; cross a try/catch boundary).

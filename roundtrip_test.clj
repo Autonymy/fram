@@ -22,8 +22,11 @@
       out (str (System/getProperty "java.io.tmpdir") "/cheln-rt-"
                (System/currentTimeMillis))]
   (.mkdirs (io/file out))
-  (doseq [te (k/thread-ids-i idx)]
-    (spit (str out "/" (exp/thread-filename idx te)) (exp/thread-md idx te)))
+  (let [claims (:claims (fold/fold a-asserts))]
+    (doseq [te (k/thread-ids-i idx)]
+      (let [title (k/one-i idx te "title")
+            fname (str (subs te 1) "-" (chelonia.rt/slugify (if title title "untitled")) ".md")]
+        (spit (str out "/" fname) (exp/thread-md claims te)))))
   (let [b (claim-set (imp/load-corpus out))
         only-a (clojure.set/difference a b)
         only-b (clojure.set/difference b a)]

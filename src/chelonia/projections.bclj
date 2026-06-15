@@ -8,7 +8,7 @@
 ;; Direct deps of te that are known threads and not yet terminal.
 (defn incomplete-deps [idx :- k/Index te :- String] :- (Vec String)
   (filterv (fn [d :- String] :- Bool
-             (and (some? (k/one-i idx d "state")) (not (k/terminal-i? idx d))))
+             (and (some? (k/one-i idx d "title")) (not (k/terminal-i? idx d))))
            (k/many-i idx te "depends_on")))
 
 (defn blocked? [idx :- k/Index te :- String] :- Bool
