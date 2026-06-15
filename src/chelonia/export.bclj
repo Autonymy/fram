@@ -28,7 +28,7 @@
         (not (= v (str/trim v)))
         (indicator-first? v))))
 
-(defn- yaml-scalar [v :- String] :- String
+(defn yaml-scalar [v :- String] :- String
   (if (hazard? v)
     (str "'" (str/replace v "'" "''") "'")
     v))

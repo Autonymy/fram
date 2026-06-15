@@ -82,20 +82,20 @@
 
 ;; --- terminal capture: a one-line thought -> a ready thread -> folded --------
 ;; Sugar for "write the Markdown I'd write anyway, then import" — the capture
-;; surface the hero promises. `dq` double-quotes a scalar as YAML (import's
-;; parser unquotes it), so colons/quotes in title or owner are inert. Newlines
-;; are rejected upstream: the flat frontmatter parser is line-oriented, so an
-;; embedded LF would split the field and inject/clobber claims (frontmatter
-;; injection) — dq cannot defend a line-oriented parser, only single-line input.
-(defn- dq [s :- String] :- String
-  (str "\"" (str/replace s "\"" "\\\"") "\""))
-
+;; surface the hero promises. Scalars go through export's YAML-correct
+;; `yaml-scalar` (single-quote on hazard, '' doubling), so colons / quotes /
+;; BACKSLASHES are inert for a REAL YAML parser too (los validate), not just
+;; chelonia's naive one — a double-quote escaper that misses `\` would emit a
+;; file chelonia accepts but los validate rejects. Newlines are rejected
+;; upstream: the flat frontmatter parser is line-oriented, so an embedded LF
+;; would split the field and inject/clobber claims — quoting can't defend a
+;; line-oriented parser, only single-line input can.
 (defn- ctrl? [s :- String] :- Bool
   (or (str/includes? s "\n") (str/includes? s "\r")))
 
 ;; an optional frontmatter line — omitted entirely when the value is blank
 (defn- fm-opt-line [k :- String v :- String] :- String
-  (if (str/blank? v) "" (str k ": " (dq v) "\n")))
+  (if (str/blank? v) "" (str k ": " (exp/yaml-scalar v) "\n")))
 
 ;; Provenance defaults are generic (self/you); a consumer overrides them via
 ;; CHELONIA_SOURCE/AUTHOR/LEAD/DRIVER/PROPOSED_BY (the life-os wrapper sets its
@@ -105,14 +105,14 @@
                    lead :- String driver :- String proposed :- String today :- String] :- String
   (str "---\n"
        "id: " id "\n"
-       "title: " (dq title) "\n"
+       "title: " (exp/yaml-scalar title) "\n"
        "state: ready\n"
-       "owner: " (dq owner) "\n"
+       "owner: " (exp/yaml-scalar owner) "\n"
        (fm-opt-line "lead" lead)
        (fm-opt-line "driver" driver)
-       "source: " (dq source) "\n"
+       "source: " (exp/yaml-scalar source) "\n"
        (fm-opt-line "proposed_by" proposed)
-       "created_by: " (dq author) "\n"
+       "created_by: " (exp/yaml-scalar author) "\n"
        "created_at: " today "\n"
        "updated_at: " today "\n"
        "---\n\n"

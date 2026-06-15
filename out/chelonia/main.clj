@@ -57,17 +57,14 @@
   (chelonia.rt/write-log log as)
   (println (str "imported -> " (count as) " claims -> " log))))))
 
-(defn- ^String dq [^String s]
-  (str "\"" (str/replace s "\"" "\\\"") "\""))
-
 (defn- ^Boolean ctrl? [^String s]
   (or (str/includes? s "\n") (str/includes? s "\r")))
 
 (defn- ^String fm-opt-line [^String k ^String v]
-  (if (str/blank? v) "" (str k ": " (dq v) "\n")))
+  (if (str/blank? v) "" (str k ": " (exp/yaml-scalar v) "\n")))
 
 (defn- ^String capture-md [^String id ^String title ^String owner ^String source ^String author ^String lead ^String driver ^String proposed ^String today]
-  (str "---\n" "id: " id "\n" "title: " (dq title) "\n" "state: ready\n" "owner: " (dq owner) "\n" (fm-opt-line "lead" lead) (fm-opt-line "driver" driver) "source: " (dq source) "\n" (fm-opt-line "proposed_by" proposed) "created_by: " (dq author) "\n" "created_at: " today "\n" "updated_at: " today "\n" "---\n\n" "## Claim\n\n" title "\n\n" "## Log\n\n" today " — captured via `chelonia capture`.\n"))
+  (str "---\n" "id: " id "\n" "title: " (exp/yaml-scalar title) "\n" "state: ready\n" "owner: " (exp/yaml-scalar owner) "\n" (fm-opt-line "lead" lead) (fm-opt-line "driver" driver) "source: " (exp/yaml-scalar source) "\n" (fm-opt-line "proposed_by" proposed) "created_by: " (exp/yaml-scalar author) "\n" "created_at: " today "\n" "updated_at: " today "\n" "---\n\n" "## Claim\n\n" title "\n\n" "## Log\n\n" today " — captured via `chelonia capture`.\n"))
 
 (defn cmd-capture [^String threads-dir ^String log ^String title ^String owner]
   (let [source (chelonia.rt/getenv-or "CHELONIA_SOURCE" "self")

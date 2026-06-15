@@ -9,7 +9,7 @@
 (defn- ^Boolean hazard? [^String v]
   (if (str/blank? v) true (or (str/includes? v ":") (str/includes? v "#") (str/includes? v "'") (str/includes? v "\"") (not (= v (str/trim v))) (indicator-first? v))))
 
-(defn- ^String yaml-scalar [^String v]
+(defn ^String yaml-scalar [^String v]
   (if (hazard? v) (str "'" (str/replace v "'" "''") "'") v))
 
 (defn- ^String strip-pfx [^String pfx ^String v]
