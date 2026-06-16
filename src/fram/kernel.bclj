@@ -1,7 +1,7 @@
 #lang beagle/clj
 (ns fram.kernel
   "Claim kernel: the (l p r) claim model, query, apply/retract, obligation rules.
-  Ported from the proven Clojure prototype (chelonia/fram.clj + coord.clj).
+  Ported from the proven Clojure prototype (fram.clj + coord.clj).
   Pure logic — host interop (file IO, sockets) lives in fram.rt externs.")
 
 (require clojure.string :as str)

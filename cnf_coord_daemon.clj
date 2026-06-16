@@ -287,11 +287,11 @@
   (case cmd
     ;; v2-log canonical + optional flat projection (design A)
     "serve"      (serve-daemon (Integer/parseInt (or p "7977"))
-                               (or log (str (System/getProperty "user.dir") "/chelonia-data/claims-v2.log"))
+                               (or log (str (System/getProperty "user.dir") "/data/claims-v2.log"))
                                flat)
     ;; DROP-IN: flat log canonical, reified engine over it (design B) — the safe
     ;; reversible swap for coord.clj: `serve-flat 7977 <claims.log>`
     "serve-flat" (serve-flat-daemon (Integer/parseInt (or p "7977"))
-                                    (or log (str (System/getProperty "user.dir") "/chelonia-data/claims.log")))
+                                    (or log (str (System/getProperty "user.dir") "/data/claims.log")))
     "test"       (run-test (Integer/parseInt (or p "7988")))
     nil))

@@ -212,7 +212,7 @@
           (recur)))))
   nil)
 
-;; --- time module runtime (ported from los.rt for `chelonia time`) -----------
+;; --- time module runtime (ported from los.rt for `lodestar clock`) -----------
 
 (defn error-exit [msg]
   (binding [*out* *err*] (println (str "error: " msg)))
