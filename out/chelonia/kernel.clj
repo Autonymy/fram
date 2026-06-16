@@ -1,7 +1,8 @@
 (ns chelonia.kernel
   (:require [clojure.string :as str]))
 
-(def single-valued ["title" "owner" "lead" "driver" "source" "part_of" "do_on" "valid_until" "estimate_hours" "created_at" "updated_at" "name" "body" "created_by" "committed" "outcome" "abandoned" "superseded_by" "merged_into" "session_of" "start_time" "end_time" "clockify_id"])
+(def single-valued (let [env (System/getenv "CHELONIA_SINGLE_VALUED")]
+  (if (and (some? env) (not (= env ""))) (vec (str/split env #"\s+")) ["title" "owner" "lead" "driver" "source" "part_of" "do_on" "valid_until" "estimate_hours" "created_at" "updated_at" "name" "body" "created_by" "committed" "outcome" "abandoned" "superseded_by" "merged_into" "session_of" "start_time" "end_time" "clockify_id"])))
 
 (defn ^Boolean vec-contains? [xs ^String s]
   (loop [r xs]
