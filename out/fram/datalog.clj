@@ -1,5 +1,5 @@
-(ns chelonia.datalog
-  (:require [chelonia.cnf :as c]))
+(ns fram.datalog
+  (:require [fram.cnf :as c]))
 
 (defn v [name]
   {:var name})

@@ -1,8 +1,8 @@
 #lang beagle/clj
-(ns chelonia.kernel
+(ns fram.kernel
   "Claim kernel: the (l p r) claim model, query, apply/retract, obligation rules.
-  Ported from the proven Clojure prototype (chelonia/chelonia.clj + coord.clj).
-  Pure logic — host interop (file IO, sockets) lives in chelonia.rt externs.")
+  Ported from the proven Clojure prototype (chelonia/fram.clj + coord.clj).
+  Pure logic — host interop (file IO, sockets) lives in fram.rt externs.")
 
 (require clojure.string :as str)
 
@@ -11,12 +11,12 @@
 ;; Lifecycle is NOT a stored enum — it's derived from these structural facts:
 ;; commitment (`committed`), completion (`outcome`), withdrawal (`abandoned`),
 ;; activity (`driver`/clock, derived), blocked (`depends_on`, derived).
-;; Cardinality vocab is INJECTED by the app (lodestar exports CHELONIA_SINGLE_VALUED,
+;; Cardinality vocab is INJECTED by the app (lodestar exports FRAM_SINGLE_VALUED,
 ;; space-separated) — the engine hard-codes NO domain vocab of its own. The literal
 ;; below is a TRANSITIONAL fallback for back-compat (tests / un-wrapped invocation);
 ;; it goes away once every caller sets the env. (§1.1, fram/lodestar un-tangle.)
 (def single-valued :- (Vec String)
-  (let [env :- Any (System/getenv "CHELONIA_SINGLE_VALUED")]
+  (let [env :- Any (System/getenv "FRAM_SINGLE_VALUED")]
     (if (and (some? env) (not (= env "")))
       (vec (str/split env #"\s+"))
       ["title" "owner" "lead" "driver" "source" "part_of"

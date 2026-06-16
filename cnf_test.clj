@@ -1,7 +1,7 @@
 ;; cnf_test.clj — reified CNF kernel: smoke + the app-B checks + SEMANTIC
 ;; conformance to the Racket oracle's real fixtures (cnf-experiments).
 ;;   bb -cp out cnf_test.clj
-(require '[chelonia.cnf :as k])
+(require '[fram.cnf :as k])
 
 (def ctx (k/new-store))
 (def tx (k/begin-tx! ctx "test"))

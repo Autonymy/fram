@@ -1,6 +1,6 @@
 #lang beagle/clj
 ;; ============================================================================
-;; chelonia.schema — the CNF schema/identity layer over the kernel.
+;; fram.schema — the CNF schema/identity layer over the kernel.
 ;; ============================================================================
 ;; Still DOMAIN-AGNOSTIC: this is the META-model (name/identity, predicate
 ;; cardinality + value-kind, cardinality-driven supersession) — NOT life-os
@@ -22,9 +22,9 @@
 ;;   (lookup ctx subj pname) / (lookup-all …) / (find-by ctx pname v)
 ;;   (name! ctx subj nm tx) / (name-of ctx subj) / (resolve-name ctx nm)
 ;; ============================================================================
-(ns chelonia.schema)
+(ns fram.schema)
 (define-mode strict)
-(require chelonia.cnf :as c)
+(require fram.cnf :as c)
 
 ;; Bootstrap the structural predicates. Raw claim! (fresh store, no priors to
 ;; supersede). superseded_by is the supersession trigger; it is multi/ref.

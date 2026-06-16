@@ -1,11 +1,11 @@
-(ns chelonia.main
+(ns fram.main
   (:gen-class)
-  (:require [chelonia.kernel :as k]
-            [chelonia.fold :as fold]
-            [chelonia.import :as imp]
-            [chelonia.export :as exp]
+  (:require [fram.kernel :as k]
+            [fram.fold :as fold]
+            [fram.import :as imp]
+            [fram.export :as exp]
             [clojure.string :as str]
-            [chelonia.rt :as rt]))
+            [fram.rt :as rt]))
 
 (defn- ^String short-id [^String te]
   (if (str/starts-with? te "@") (subs te 1) te))
@@ -23,30 +23,30 @@
   (reduce (fn [m c] (assoc m (claim-sig c) true)) {} claims))
 
 (defn- pending-coord-count [^String log file-sigs]
-  (count (filterv (fn [v] (and (or (= (:frame v) "coord") (= (:frame v) "agent") (= (:frame v) "cli")) (nil? (get file-sigs (str (:l v) "|" (:p v) "|" (:r v)))))) (fold/fold-latest (chelonia.rt/read-log log)))))
+  (count (filterv (fn [v] (and (or (= (:frame v) "coord") (= (:frame v) "agent") (= (:frame v) "cli")) (nil? (get file-sigs (str (:l v) "|" (:p v) "|" (:r v)))))) (fold/fold-latest (fram.rt/read-log log)))))
 
 (defn cmd-import [^String threads-dir ^String log ^Boolean force]
   (let [as (imp/load-corpus threads-dir)
    file-sigs (sig-member-map (:claims (fold/fold as)))
    lost (pending-coord-count log file-sigs)]
   (if (and (> lost 0) (not force)) (println (str "REFUSING import: " lost " coordinator write(s) in the log are not in the " "files (would be lost). Run `export` first, or `import --force`.")) (do
-  (chelonia.rt/write-log log as)
+  (fram.rt/write-log log as)
   (println (str "imported -> " (count as) " claims -> " log))))))
 
 (defn cmd-export [^String threads-dir ^String log ^String out-dir]
-  (let [log-claims (:claims (fold/fold (chelonia.rt/read-log log)))
+  (let [log-claims (:claims (fold/fold (fram.rt/read-log log)))
    file-claims (:claims (fold/fold (imp/load-corpus threads-dir)))]
   (if (not (= (sig-set log-claims) (sig-set file-claims))) (println (str "REFUSING export: threads/ has changes not in the log " "(concurrent edits?). Run `import` first, or write via the coordinator.")) (let [idx (k/build-index log-claims)
    tes (k/thread-ids-i idx)]
-  (chelonia.rt/ensure-dir out-dir)
+  (fram.rt/ensure-dir out-dir)
   (doseq [te tes]
   (let [title (k/one-i idx te "title")
-   fname (str (subs te 1) "-" (chelonia.rt/slugify (if (some? title) title "untitled")) ".md")]
-  (chelonia.rt/spit-file (str out-dir "/" fname) (exp/thread-md log-claims te))))
+   fname (str (subs te 1) "-" (fram.rt/slugify (if (some? title) title "untitled")) ".md")]
+  (fram.rt/spit-file (str out-dir "/" fname) (exp/thread-md log-claims te))))
   (println (str "exported " (count tes) " threads -> " out-dir))))))
 
 (defn cmd-validate [^String log]
-  (let [idx (k/build-index (:claims (fold/fold (chelonia.rt/read-log log))))
+  (let [idx (k/build-index (:claims (fold/fold (fram.rt/read-log log))))
    problems (reduce (fn [acc te] (reduce (fn [a v] (conj a (str (short-id te) ": " v))) acc (k/violations-i idx te))) [] (k/thread-ids-i idx))]
   (if (empty? problems) (println (str "OK — " (count (k/thread-ids-i idx)) " threads, no violations.")) (do
   (doseq [p problems]
@@ -54,7 +54,7 @@
   (println (str "\n" (count problems) " violation(s)."))))))
 
 (defn cmd-show [^String log ^String id]
-  (let [f (fold/fold (chelonia.rt/read-log log))
+  (let [f (fold/fold (fram.rt/read-log log))
    claims (:claims f)
    te (str "@" id)
    cs (k/q-by-l claims te)]
@@ -62,14 +62,14 @@
   (println (str "  " (:p c) "  " (trunc (:r c) 80)))))))
 
 (defn cmd-set [^String log ^String id ^String pred ^String value]
-  (let [f (fold/fold (chelonia.rt/read-log log))
+  (let [f (fold/fold (fram.rt/read-log log))
    claims (:claims f)
    te (str "@" id)
    rv (if (or (= pred "depends_on") (= pred "part_of") (= pred "relates_to")) (str "@" value) value)
    cand (k/apply-assert claims (k/->Claim te pred rv))
    viol (k/violations cand te)]
   (if (not (empty? viol)) (println (str "REJECTED — " (str/join "; " viol))) (do
-  (chelonia.rt/append-assertion log (fold/->Assertion (+ (:version f) 1) "assert" te pred rv "cli"))
+  (fram.rt/append-assertion log (fold/->Assertion (+ (:version f) 1) "assert" te pred rv "cli"))
   (println (str "ok — " id " " pred " = " rv " (v" (+ (:version f) 1) ")"))))))
 
 (defn- claims->assertions [claims ^String frame]
@@ -80,16 +80,16 @@
   (recur (rest cs) (+ i 1) (conj acc (fold/->Assertion i "assert" (:l c) (:p c) (:r c) frame)))))))
 
 (defn cmd-merge [^String log ^String from ^String to]
-  (let [claims (:claims (fold/fold (chelonia.rt/read-log log)))
+  (let [claims (:claims (fold/fold (fram.rt/read-log log)))
    rewritten (mapv (fn [c] (k/->Claim (if (= (:l c) from) to (:l c)) (:p c) (if (= (:r c) from) to (:r c)))) claims)
    withrec (conj rewritten (k/->Claim from "merged_into" to))
    deduped (:claims (fold/fold (claims->assertions withrec "merge")))]
-  (chelonia.rt/write-log log (claims->assertions deduped "merge"))
+  (fram.rt/write-log log (claims->assertions deduped "merge"))
   (println (str "merged " from " -> " to "  (" (count claims) " claims -> " (count deduped) ")"))))
 
 (defn- ^String tell-once [port ^String op ^String te ^String pred ^String rv]
-  (let [v (chelonia.rt/coord-version port)]
-  (if (< v 0) "nodaemon" (if (= op "assert") (chelonia.rt/coord-assert port te pred rv v) (chelonia.rt/coord-retract port te pred rv v)))))
+  (let [v (fram.rt/coord-version port)]
+  (if (< v 0) "nodaemon" (if (= op "assert") (fram.rt/coord-assert port te pred rv v) (fram.rt/coord-retract port te pred rv v)))))
 
 (defn- ^String tell-retry [port ^String op ^String te ^String pred ^String rv tries]
   (let [resp (tell-once port op te pred rv)]
@@ -98,7 +98,7 @@
 (defn cmd-tell [^String op ^String id ^String pred ^String value]
   (let [te (str "@" id)
    rv (if (or (= pred "depends_on") (= pred "part_of") (= pred "relates_to")) (str "@" value) value)
-   resp (tell-retry (chelonia.rt/coord-port) op te pred rv 5)]
+   resp (tell-retry (fram.rt/coord-port) op te pred rv 5)]
   (cond
   (= resp "nodaemon") (println "no coordinator on 127.0.0.1:7977 — run `fram serve`, or use `set` (single-writer)")
   (= resp "conflict") (println "rejected: write conflict after retries (another agent is racing this id+pred)")
@@ -106,9 +106,9 @@
   :else (println (str "REJECTED by coordinator: " resp)))))
 
 (defn cmd-watch []
-  (let [port (chelonia.rt/coord-port)]
+  (let [port (fram.rt/coord-port)]
   (println (str "watching coordinator on 127.0.0.1:" port " — Ctrl-C to stop"))
-  (chelonia.rt/coord-watch port)))
+  (fram.rt/coord-watch port)))
 
 (defn run [args ^String threads-dir ^String log]
   (let [cmd (if (empty? args) "" (first args))]
@@ -125,4 +125,4 @@
   :else (println "fram (engine) usage: import | export <out-dir> | show <id> | validate | watch | set <id> <pred> <value> | tell <id> <pred> <value> | untell <id> <pred> <value> | merge <from> <to>"))))
 
 (defn -main [& args]
-  (run (vec args) (chelonia.rt/threads-dir) (chelonia.rt/log-path)))
+  (run (vec args) (fram.rt/threads-dir) (fram.rt/log-path)))

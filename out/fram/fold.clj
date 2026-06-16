@@ -1,5 +1,5 @@
-(ns chelonia.fold
-  (:require [chelonia.kernel :as k]))
+(ns fram.fold
+  (:require [fram.kernel :as k]))
 
 (defrecord Assertion [tx op l p r frame])
 

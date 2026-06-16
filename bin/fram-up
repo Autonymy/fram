@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Ensure the Chelonia coordinator daemon is running — the "revive" half of the
+# Ensure the Fram coordinator daemon is running — the "revive" half of the
 # doctor handshake (analogous to `beagle-doctor --revive`). Idempotent: if a
 # daemon is already up it's a no-op; otherwise it starts one (detached) on the
 # canonical log and waits until it answers.
 #
-#   CHELONIA_PORT / CHELONIA_LOG select the port + log (default 7977, ./claims.log).
+#   FRAM_PORT / FRAM_LOG select the port + log (default 7977, ./claims.log).
 HERE="$(cd "$(dirname "$0")" && pwd)"
-export CHELONIA_PORT="${CHELONIA_PORT:-7977}"
-LOG="${CHELONIA_LOG:-$PWD/claims.log}"
+export FRAM_PORT="${FRAM_PORT:-7977}"
+LOG="${FRAM_LOG:-$PWD/claims.log}"
 RESTART=0; [ "$1" = "--restart" ] && RESTART=1
 
 # PIDs listening on the port. fuser/lsof are NOT always installed (e.g. NixOS),
@@ -15,33 +15,33 @@ RESTART=0; [ "$1" = "--restart" ] && RESTART=1
 # squatted the port — the new daemon then failed to bind and `up` falsely
 # reported success because the zombie answered `doctor`. ss (iproute2) is
 # reliably present; kill by the listener PID and VERIFY the port frees.
-port_pids() { ss -tlnpH "sport = :$CHELONIA_PORT" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u; }
+port_pids() { ss -tlnpH "sport = :$FRAM_PORT" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u; }
 
 if [ "$RESTART" = 1 ]; then
-  echo "stopping any coordinator on :$CHELONIA_PORT"
+  echo "stopping any coordinator on :$FRAM_PORT"
   for p in $(port_pids); do kill "$p" 2>/dev/null || true; done
   for _ in $(seq 20); do [ -z "$(port_pids)" ] && break; sleep 0.1; done
   for p in $(port_pids); do kill -9 "$p" 2>/dev/null || true; done
   for _ in $(seq 20); do [ -z "$(port_pids)" ] && break; sleep 0.1; done
   if [ -n "$(port_pids)" ]; then
-    echo "ERROR: :$CHELONIA_PORT still held by PID(s) $(port_pids | tr '\n' ' ')after SIGKILL — kill manually." >&2
+    echo "ERROR: :$FRAM_PORT still held by PID(s) $(port_pids | tr '\n' ' ')after SIGKILL — kill manually." >&2
     exit 1
   fi
-elif "$HERE/chelonia" doctor 2>/dev/null | grep -q 'coordinator UP'; then
-  echo "coordinator already up on :$CHELONIA_PORT (use \`up --restart\` to reload it)"
+elif "$HERE/fram" doctor 2>/dev/null | grep -q 'coordinator UP'; then
+  echo "coordinator already up on :$FRAM_PORT (use \`up --restart\` to reload it)"
   exit 0
 fi
 
-echo "starting coordinator on :$CHELONIA_PORT  (log: $LOG)"
-setsid "$HERE/chelonia-daemon" "$CHELONIA_PORT" "$LOG" >"/tmp/chelonia-daemon-$CHELONIA_PORT.log" 2>&1 &
+echo "starting coordinator on :$FRAM_PORT  (log: $LOG)"
+setsid "$HERE/fram-daemon" "$FRAM_PORT" "$LOG" >"/tmp/fram-daemon-$FRAM_PORT.log" 2>&1 &
 disown 2>/dev/null || true
 
 for _ in $(seq 40); do
-  if "$HERE/chelonia" doctor 2>/dev/null | grep -q 'coordinator UP'; then
-    echo "coordinator up on :$CHELONIA_PORT"
+  if "$HERE/fram" doctor 2>/dev/null | grep -q 'coordinator UP'; then
+    echo "coordinator up on :$FRAM_PORT"
     exit 0
   fi
   sleep 0.25
 done
-echo "ERROR: daemon did not come up — see /tmp/chelonia-daemon-$CHELONIA_PORT.log" >&2
+echo "ERROR: daemon did not come up — see /tmp/fram-daemon-$FRAM_PORT.log" >&2
 exit 1

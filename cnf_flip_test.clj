@@ -10,8 +10,8 @@
 ;; the cold CLI (which folds it) keeps working unchanged across the cutover. Plus
 ;; base_version contention holds end-to-end over the socket.
 ;;   CHELONIA_LOG=/path bb -cp out cnf_flip_test.clj
-(require '[chelonia.cnf :as c] '[chelonia.schema :as s]
-         '[chelonia.fold :as fold] '[chelonia.rt] '[chelonia.kernel :as ck]
+(require '[fram.cnf :as c] '[fram.schema :as s]
+         '[fram.fold :as fold] '[fram.rt] '[fram.kernel :as ck]
          '[clojure.string :as str] '[clojure.set :as set] '[clojure.java.io :as io])
 (load-file "cnf_coord_daemon.clj")   ; daemon: boot!/serve/client/do-* + reified->claims
 
@@ -24,7 +24,7 @@
 (io/copy (io/file live) (io/file flip-flat))         ; the flat projection seed (full history)
 
 ;; --- migrate the copy -> reified store -> v2 log ----------------------------
-(def flat-claims (:claims (fold/fold (vec (filter #(and (:l %) (:p %) (:r %)) (chelonia.rt/read-log flip-flat))))))
+(def flat-claims (:claims (fold/fold (vec (filter #(and (:l %) (:p %) (:r %)) (fram.rt/read-log flip-flat))))))
 (def single-preds #{"title" "owner" "lead" "driver" "assignee" "source" "part_of"
                     "do_on" "valid_until" "estimate_hours" "created_at" "updated_at"
                     "body" "created_by" "committed" "outcome" "abandoned"
@@ -57,7 +57,7 @@
                    [(s/name-of st (:l cl)) pstr
                     (if (c/value-object? st (:r cl)) (c/literal st (:r cl)) (s/name-of st (:r cl)))])))
              (c/current-claims st))))
-(defn flat-triples [f] (set (map (fn [cl] [(:l cl) (:p cl) (:r cl)]) (:claims (fold/fold (vec (filter #(and (:l %) (:p %) (:r %)) (chelonia.rt/read-log f))))))))
+(defn flat-triples [f] (set (map (fn [cl] [(:l cl) (:p cl) (:r cl)]) (:claims (fold/fold (vec (filter #(and (:l %) (:p %) (:r %)) (fram.rt/read-log f))))))))
 
 (def before-reif (domain-triples (:store @co)))
 (def before-flat (flat-triples flip-flat))

@@ -1,4 +1,4 @@
-(ns chelonia.cnf)
+(ns fram.cnf)
 
 (defn new-store []
   (atom {:next-id 0 :next-seq 0 :supersedes-pred nil :objects {} :values {} :val-intern {} :claims {} :tx-of {} :txs {} :superseded {} :idx-by-l {} :idx-by-p {} :idx-by-r {} :idx-by-lp {} :idx-by-pr {}}))

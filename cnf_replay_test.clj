@@ -3,9 +3,9 @@
 ;; fold (no claim lost or gained). The flat->reified bridge is domain-level
 ;; (knows the @id ref convention); the kernel stays domain-agnostic.
 ;;   CHELONIA_LOG=/path bb -cp out cnf_replay_test.clj
-(require '[chelonia.cnf :as c]
-         '[chelonia.fold :as fold]
-         '[chelonia.rt]
+(require '[fram.cnf :as c]
+         '[fram.fold :as fold]
+         '[fram.rt]
          '[clojure.string :as str]
          '[clojure.set :as set]
          '[clojure.java.io :as io])
@@ -16,7 +16,7 @@
   (System/exit 0))
 
 ;; today's flat fold: the current (l p r) string triples.
-(def flat-claims (:claims (fold/fold (chelonia.rt/read-log log))))
+(def flat-claims (:claims (fold/fold (fram.rt/read-log log))))
 (def flat-set (set (map (fn [cl] [(:l cl) (:p cl) (:r cl)]) flat-claims)))
 
 ;; --- replay into the reified kernel -----------------------------------------

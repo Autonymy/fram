@@ -2,7 +2,7 @@
 ;; refs, find-by, identity (name/rename/resolve). Mirrors the oracle's
 ;; schema.rkt/graph.rkt semantics.
 ;;   bb -cp out schema_test.clj
-(require '[chelonia.cnf :as c] '[chelonia.schema :as s])
+(require '[fram.cnf :as c] '[fram.schema :as s])
 
 (def ctx (c/new-store))
 (def tx (c/begin-tx! ctx "test"))

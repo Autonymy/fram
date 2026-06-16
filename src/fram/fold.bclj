@@ -1,9 +1,9 @@
 #lang beagle/clj
-(ns chelonia.fold
+(ns fram.fold
   "Replay the append-only assertion log into the current claim set + version.
-  Pure projection over assertions; the log bytes are read via chelonia.rt.")
+  Pure projection over assertions; the log bytes are read via fram.rt.")
 
-(require chelonia.kernel :as k)
+(require fram.kernel :as k)
 
 (defrecord Assertion [tx :- Int op :- String l :- String p :- String r :- String frame :- String])
 

@@ -1,26 +1,26 @@
 #lang beagle/clj
-(ns chelonia.import
+(ns fram.import
   "Import thread files into the assertion log. A file is a block of
   `@subject predicate object` lines, then `---`, then a prose body. Every line
   IS a claim, so this is GENERIC — no per-field knowledge, no schema. Objects are
-  either refs (`@id`) or EDN literals. Host IO via chelonia.rt externs.")
+  either refs (`@id`) or EDN literals. Host IO via fram.rt externs.")
 
-(require chelonia.kernel :as k)
-(require chelonia.fold :as fold)
+(require fram.kernel :as k)
+(require fram.fold :as fold)
 (require clojure.string :as str)
-(require chelonia.rt)
+(require fram.rt)
 
-(declare-extern chelonia.rt/slurp [String -> String])
-(declare-extern chelonia.rt/list-md [String -> (Vec String)])
-(declare-extern chelonia.rt/split-on [String String -> (Vec String)])
-(declare-extern chelonia.rt/split-kv [String -> (Vec String)])
-(declare-extern chelonia.rt/edn-unquote [String -> String])
+(declare-extern fram.rt/slurp [String -> String])
+(declare-extern fram.rt/list-md [String -> (Vec String)])
+(declare-extern fram.rt/split-on [String String -> (Vec String)])
+(declare-extern fram.rt/split-kv [String -> (Vec String)])
+(declare-extern fram.rt/edn-unquote [String -> String])
 
 ;; --- split a file into [claim-head, prose-body] on the first `---` line -------
 (defrecord Doc [head :- String body :- String])
 
 (defn- split-doc [content :- String] :- Doc
-  (let [lines (chelonia.rt/split-on content "\n")
+  (let [lines (fram.rt/split-on content "\n")
         n (count lines)]
     (loop [i 0]
       (cond
@@ -34,13 +34,13 @@
 (defn- parse-obj [tok :- String] :- String
   (cond
     [(str/starts-with? tok "@") tok]
-    [(str/starts-with? tok "\"") (chelonia.rt/edn-unquote tok)]
+    [(str/starts-with? tok "\"") (fram.rt/edn-unquote tok)]
     [:else tok]))
 
 ;; --- a file -> its claims (subject from the leading @line; body -> a claim) ---
 (defn- file->claims [content :- String] :- (Vec k/Claim)
   (let [doc (split-doc content)
-        lines (chelonia.rt/split-on (:head doc) "\n")
+        lines (fram.rt/split-on (:head doc) "\n")
         n (count lines)
         si (loop [i 0]
              (cond
@@ -56,7 +56,7 @@
                        (let [t (str/trim (nth lines i))]
                          (if (str/blank? t)
                            (recur (+ i 1) acc)
-                           (let [kv (chelonia.rt/split-kv t)]
+                           (let [kv (fram.rt/split-kv t)]
                              (recur (+ i 1)
                                     (conj acc (k/->Claim subj (nth kv 0) (parse-obj (nth kv 1))))))))))
             body (:body doc)]
@@ -72,9 +72,9 @@
                (conj acc (fold/->Assertion i "assert" (:l c) (:p c) (:r c) "import")))))))
 
 (defn load-corpus [threads-dir :- String] :- (Vec fold/Assertion)
-  (let [files (chelonia.rt/list-md threads-dir)
+  (let [files (fram.rt/list-md threads-dir)
         claims (reduce (fn [acc :- (Vec k/Claim) path :- String] :- (Vec k/Claim)
-                         (vec (concat acc (file->claims (chelonia.rt/slurp path)))))
+                         (vec (concat acc (file->claims (fram.rt/slurp path)))))
                        []
                        files)]
     (number-assertions claims)))

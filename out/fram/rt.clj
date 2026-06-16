@@ -1,15 +1,15 @@
-(ns chelonia.rt
+(ns fram.rt
   "Host-interop runtime for Chelonia's Beagle modules — the irreducible Clojure
   layer (file IO, log read/write, string ops) the .bclj `declare-extern`s bind
   to. Beagle owns the typed logic; this owns the host calls.
 
   Paths default to the current working directory (./threads, ./claims.log) and
-  are overridable via CHELONIA_THREADS / CHELONIA_LOG."
+  are overridable via FRAM_THREADS / FRAM_LOG."
   (:require [clojure.string :as str]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [cheshire.core :as cheshire]
-            [chelonia.fold :as fold]))
+            [fram.fold :as fold]))
 
 ;; Serialize any value (records serialize as objects keyed by field name; vectors
 ;; as arrays) to JSON — the engine's structured-output path for the MCP edge.
@@ -126,13 +126,13 @@
 ;; --- portable defaults ------------------------------------------------------
 
 (defn threads-dir []
-  (or (System/getenv "CHELONIA_THREADS")
+  (or (System/getenv "FRAM_THREADS")
       (str (System/getProperty "user.dir") "/threads")))
 (defn log-path []
-  (or (System/getenv "CHELONIA_LOG")
+  (or (System/getenv "FRAM_LOG")
       (str (System/getProperty "user.dir") "/claims.log")))
 (defn time-dir []
-  (or (System/getenv "CHELONIA_TIME_DIR")
+  (or (System/getenv "FRAM_TIME_DIR")
       (str (System/getProperty "user.dir") "/time")))
 
 ;; capture provenance: generic fallbacks here; a consumer (e.g. the life-os
@@ -192,7 +192,7 @@
 (defn coord-assert  [port te pred value base] (coord-write :assert  port te pred value base))
 (defn coord-retract [port te pred value base] (coord-write :retract port te pred value base))
 
-(defn coord-port [] (if-let [p (System/getenv "CHELONIA_PORT")] (Integer/parseInt p) 7977))
+(defn coord-port [] (if-let [p (System/getenv "FRAM_PORT")] (Integer/parseInt p) 7977))
 
 (defn coord-status [port]
   (try (let [r (coord-rt port {:op :status})]

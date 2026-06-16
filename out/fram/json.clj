@@ -1,4 +1,4 @@
-(ns chelonia.json
+(ns fram.json
   "Insertion-order JSON handle for the time module (ported from los.json).
   Handle is a vector of [key val-descriptor] pairs preserving order.
   Val-descriptor is {:type :string/:null/:raw, :val s-or-nil}.")

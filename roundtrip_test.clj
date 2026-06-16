@@ -5,11 +5,11 @@
 ;; information and files can no longer be trusted as a view of the claim graph.
 ;;
 ;;   bb -cp out roundtrip_test.clj      (run from the repo root; uses threads/)
-(require '[chelonia.kernel :as k]
-         '[chelonia.fold :as fold]
-         '[chelonia.import :as imp]
-         '[chelonia.export :as exp]
-         '[chelonia.rt]
+(require '[fram.kernel :as k]
+         '[fram.fold :as fold]
+         '[fram.import :as imp]
+         '[fram.export :as exp]
+         '[fram.rt]
          '[clojure.java.io :as io])
 
 (defn claim-set [assertions]
@@ -25,7 +25,7 @@
   (let [claims (:claims (fold/fold a-asserts))]
     (doseq [te (k/thread-ids-i idx)]
       (let [title (k/one-i idx te "title")
-            fname (str (subs te 1) "-" (chelonia.rt/slugify (if title title "untitled")) ".md")]
+            fname (str (subs te 1) "-" (fram.rt/slugify (if title title "untitled")) ".md")]
         (spit (str out "/" fname) (exp/thread-md claims te)))))
   (let [b (claim-set (imp/load-corpus out))
         only-a (clojure.set/difference a b)

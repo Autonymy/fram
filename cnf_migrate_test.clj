@@ -10,8 +10,8 @@
 ;; half of the cutover; it touches NO live file (writes /tmp only) and is fully
 ;; reversible (the flat log + pre-cnf tag are untouched).
 ;;   CHELONIA_LOG=/path bb -cp out cnf_migrate_test.clj
-(require '[chelonia.cnf :as c] '[chelonia.schema :as s]
-         '[chelonia.fold :as fold] '[chelonia.rt]
+(require '[fram.cnf :as c] '[fram.schema :as s]
+         '[fram.fold :as fold] '[fram.rt]
          '[clojure.string :as str] '[clojure.set :as set] '[clojure.java.io :as io])
 
 (def log (System/getenv "CHELONIA_LOG"))
@@ -23,7 +23,7 @@
 ;; run-test is guarded by command-line-args, so loading it has no side effects.
 (load-file "cnf_coord.clj")
 
-(def flat-claims (:claims (fold/fold (vec (filter #(and (:l %) (:p %) (:r %)) (chelonia.rt/read-log log))))))
+(def flat-claims (:claims (fold/fold (vec (filter #(and (:l %) (:p %) (:r %)) (fram.rt/read-log log))))))
 (def flat-set (set (map (fn [cl] [(:l cl) (:p cl) (:r cl)]) flat-claims)))
 
 ;; --- load flat -> reified (the proven Stage 2/4 loader) ---------------------

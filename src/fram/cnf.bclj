@@ -1,6 +1,6 @@
 #lang beagle/clj
 ;; ============================================================================
-;; chelonia.cnf — the reified CNF kernel (Stage 1).  THE one engine.
+;; fram.cnf — the reified CNF kernel (Stage 1).  THE one engine.
 ;; ============================================================================
 ;; DOMAIN-AGNOSTIC by construction: knows ONLY Object / Value / Claim / tx. ZERO
 ;; life-os vocabulary and ZERO code vocabulary — all domain terms are interned
@@ -23,7 +23,7 @@
 ;; mutate ops take id params as Any so the dynamic store + the schema/derivation
 ;; layers above never fight the type system. Minters still return Int.
 ;; ============================================================================
-(ns chelonia.cnf)
+(ns fram.cnf)
 (define-mode strict)
 
 (defn new-store [] :- Any

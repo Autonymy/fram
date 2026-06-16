@@ -1,11 +1,11 @@
 ;; cnf_coord_daemon.clj — Stage 7: the reified coordinator as a socket daemon.
 ;; ============================================================================
 ;; Speaks the SAME wire protocol as coord.clj (:version/:assert/:retract/:ready/
-;; :blocked/:leverage/:validate/:status/:subscribe), so chelonia.rt's socket
+;; :blocked/:leverage/:validate/:status/:subscribe), so fram.rt's socket
 ;; client + the CLI + the MCP work UNCHANGED after the cutover. Internally it
 ;; commits through the reified kernel (cnf_coord) over the v2 log, and serves
 ;; reads by projecting the reified live view into the EXISTING, proven projections
-;; (chelonia.projections) — the read side of the cutover. The reified live view
+;; (fram.projections) — the read side of the cutover. The reified live view
 ;; is set-equal to the flat fold (cnf_domain_test/cnf_lifecycle_test), so those
 ;; projections return identical results.
 ;;
@@ -13,9 +13,9 @@
 ;;   bb -cp out cnf_coord_daemon.clj test  [port]
 ;; ============================================================================
 (require '[clojure.string :as str] '[clojure.edn :as edn]
-         '[chelonia.cnf :as c] '[chelonia.schema :as s]
-         '[chelonia.kernel :as ck]
-         '[chelonia.fold :as fold] '[chelonia.rt])
+         '[fram.cnf :as c] '[fram.schema :as s]
+         '[fram.kernel :as ck]
+         '[fram.fold :as fold] '[fram.rt])
 (import '[java.net ServerSocket Socket InetSocketAddress]
         '[java.io BufferedReader InputStreamReader OutputStreamWriter BufferedWriter])
 (load-file "cnf_coord.clj")          ; the reified coordinator library
@@ -99,7 +99,7 @@
 ;; §1.2: ready/blocked/leverage are DOMAIN projections — the engine no longer
 ;; serves them. The CLI/MCP fold the log locally (main/cmd-ready, cmd-json), so
 ;; these daemon ops were vestigial wire-protocol surface. Dropped along with the
-;; chelonia.projections require → the daemon depends on no domain code. (:validate
+;; fram.projections require → the daemon depends on no domain code. (:validate
 ;; stays: it's kernel-level structural integrity, not lifecycle.)
 (defn- all-violations [idx]
   (->> (ck/thread-ids-i idx)
@@ -171,7 +171,7 @@
 ;; log into the reified store; commits go through the reified coordinator AND
 ;; append the flat line; external edits (capture/import/set append out-of-band)
 ;; are absorbed by re-migrating on mtime change. Cardinality comes from
-;; chelonia.kernel/single? (the existing canonical vocab — NO hardcoded list, so
+;; fram.kernel/single? (the existing canonical vocab — NO hardcoded list, so
 ;; one-engine is preserved); ref-ness follows the @-prefix convention. A true
 ;; reversible drop-in for coord.clj: same log, same protocol, reified underneath.
 ;; ===========================================================================
@@ -183,7 +183,7 @@
         ;; missing a field — and fold itself calls single? on :p, so the incomplete
         ;; line must be dropped pre-fold. A torn line is an incomplete write that
         ;; must NOT apply (the writer retries).
-        raw (chelonia.rt/read-log flat)
+        raw (fram.rt/read-log flat)
         ;; max :tx over ALL parsed lines — same set fold/max-tx (doctor's log-v)
         ;; counts, INCLUDING a torn tail (EDN-valid but missing :r). Seeding over
         ;; only the filtered asserts would lag by one when the tail is torn and make

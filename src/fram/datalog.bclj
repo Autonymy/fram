@@ -1,26 +1,26 @@
 #lang beagle/clj
 ;; ============================================================================
-;; chelonia.datalog — pure Datalog over the reified claim store (Stage 3).
+;; fram.datalog — pure Datalog over the reified claim store (Stage 3).
 ;; ============================================================================
 ;; Conforms (positive + recursive) to the Racket oracle's datalog.rkt semantics:
 ;;   - EDB base relations projected from the LIVE claim store:
 ;;       "triple" = (l p r)        "claim" = (cid l p r)
-;;     (current view — superseded claims are excluded by chelonia.cnf/by-* etc.)
+;;     (current view — superseded claims are excluded by fram.cnf/by-* etc.)
 ;;   - rules are DATA: a rule derives a head relation from a conjunctive body;
 ;;     a body literal is a relation + args; args are vars or constants (ids).
 ;;   - joins by substitution threading; a repeated var is an equality join.
 ;;   - fixpoint over a finite Herbrand base (no function symbols, set-deduped,
 ;;     monotonic) — terminates. Recursion (transitive closure) supported.
 ;; Constants in rules are already object/value ids (the domain layer resolves
-;; predicate/value names to ids via chelonia.schema before building rules), so
+;; predicate/value names to ids via fram.schema before building rules), so
 ;; the engine needs no literal resolution — it is domain-agnostic.
 ;;
 ;; This file: the POSITIVE + RECURSIVE core (naive fixpoint — correct results,
 ;; cold-recompute per the v1 decision; semi-naive/incremental is the Stage-8 perf
-;; upgrade). Stratified negation is added next (chelonia.datalog/strata).
+;; upgrade). Stratified negation is added next (fram.datalog/strata).
 ;; ============================================================================
-(ns chelonia.datalog)
-(require chelonia.cnf :as c)
+(ns fram.datalog)
+(require fram.cnf :as c)
 
 ;; --- rule/term constructors (rules are plain data) --------------------------
 (defn v [name :- Any] :- Any {:var name})                 ; a logic variable

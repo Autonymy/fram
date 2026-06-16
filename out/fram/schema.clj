@@ -1,5 +1,5 @@
-(ns chelonia.schema
-  (:require [chelonia.cnf :as c]))
+(ns fram.schema
+  (:require [fram.cnf :as c]))
 
 (defn setup! [ctx tx]
   (let [name-p (c/value! ctx "name")

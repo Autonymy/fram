@@ -1,7 +1,7 @@
 ;; cnf_coord_test.clj — Stage 6 gate: adversarial concurrency + durability proof
 ;; for the reified coordinator (mirrors coord.clj's run-test).
 ;;   bb -cp out cnf_coord_test.clj
-(require '[chelonia.cnf :as c] '[chelonia.schema :as s])
+(require '[fram.cnf :as c] '[fram.schema :as s])
 (load-file "cnf_coord.clj")   ; side-effect-free library: new-coord/commit!/replay/...
 
 (let [log "/tmp/cnf-coord-test.log"

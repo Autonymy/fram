@@ -2,7 +2,7 @@
 ;; ============================================================================
 ;; Sole writer, serialized (one lock). The flat coord.clj's proven skeleton
 ;; (locking write-lock, optimistic base_version, rule-check, append+notify),
-;; rebuilt over the reified store (chelonia.cnf + chelonia.schema). Full Clojure
+;; rebuilt over the reified store (fram.cnf + fram.schema). Full Clojure
 ;; — direct, mutable access to the store map, no Beagle typing friction.
 ;;
 ;; The six concurrency/durability holes the analysis flagged, closed here:
@@ -24,7 +24,7 @@
 ;;
 ;;   bb -cp out cnf_coord.clj test
 ;; ============================================================================
-(require '[chelonia.cnf :as c] '[chelonia.schema :as s]
+(require '[fram.cnf :as c] '[fram.schema :as s]
          '[clojure.edn :as edn] '[clojure.java.io :as io] '[clojure.string :as str])
 
 (defn- store [co] (:store co))

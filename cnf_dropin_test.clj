@@ -5,11 +5,11 @@
 ;;   - EXTERNAL flat edits (capture/import/set, out-of-band) are absorbed on the
 ;;     next op via reload — so every existing write path keeps working;
 ;;   - base_version contention holds.
-;; Cardinality comes from chelonia.kernel/single? (no hardcoded vocab); touches no
+;; Cardinality comes from fram.kernel/single? (no hardcoded vocab); touches no
 ;; live file.
 ;;   CHELONIA_LOG=/path bb -cp out cnf_dropin_test.clj
-(require '[chelonia.cnf :as c] '[chelonia.schema :as s]
-         '[chelonia.fold :as fold] '[chelonia.rt]
+(require '[fram.cnf :as c] '[fram.schema :as s]
+         '[fram.fold :as fold] '[fram.rt]
          '[clojure.set :as set] '[clojure.java.io :as io] '[clojure.string :as str])
 (load-file "cnf_coord_daemon.clj")
 
@@ -28,7 +28,7 @@
                     (if (c/value-object? st (:r cl)) (c/literal st (:r cl)) (s/name-of st (:r cl)))])))
              (c/current-claims st))))
 (defn flat-set [f] (set (map (fn [cl] [(:l cl) (:p cl) (:r cl)])
-                             (:claims (fold/fold (vec (filter #(and (:l %) (:p %) (:r %)) (chelonia.rt/read-log f))))))))
+                             (:claims (fold/fold (vec (filter #(and (:l %) (:p %) (:r %)) (fram.rt/read-log f))))))))
 
 ;; --- boot the drop-in daemon over the flat copy -----------------------------
 (boot-flat! flat)
@@ -68,18 +68,18 @@
 (def flat-lines (remove str/blank? (str/split-lines (slurp flat))))
 (def no-v2-pollution (not-any? #(str/starts-with? (str/triml %) "{:k") flat-lines))
 (def cold-fold-ok
-  (try (= (set (map (fn [cl] [(:l cl) (:p cl) (:r cl)]) (:claims (fold/fold (chelonia.rt/read-log flat)))))
+  (try (= (set (map (fn [cl] [(:l cl) (:p cl) (:r cl)]) (:claims (fold/fold (fram.rt/read-log flat)))))
           (domain-triples (:store @co)))
        (catch Throwable _ false)))
 ;; doctor computes log-v = (:version (fold (read-log flat))) over ALL parsed lines
 ;; (UNFILTERED), so daemon-v (current-seq) must match THAT, not the filtered fold.
-(def version-fresh (= (current-seq @co) (:version (fold/fold (chelonia.rt/read-log flat)))))
+(def version-fresh (= (current-seq @co) (:version (fold/fold (fram.rt/read-log flat)))))
 ;; ...and it must stay FRESH even with a torn tail (the live log is append-no-fsync,
 ;; so an EDN-valid-but-incomplete tail line is a realistic standing condition).
 (with-open [os (java.io.FileOutputStream. flat true)]
   (.write os (.getBytes (str (pr-str {:tx 7777777 :op "assert" :l "@torn-tail" :p "title"}) "\n") "UTF-8")))
 (client port {:op :status})    ; trigger maybe-reload! over the torn tail
-(def fresh-with-torn-tail (= (current-seq @co) (:version (fold/fold (chelonia.rt/read-log flat)))))
+(def fresh-with-torn-tail (= (current-seq @co) (:version (fold/fold (fram.rt/read-log flat)))))
 
 (def checks
   [["boot: reified live view == flat fold" boot-equal]
