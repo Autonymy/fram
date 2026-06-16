@@ -15,10 +15,10 @@ maintaining anything.
 > engine; the daily coordination CLI, lifecycle rules, and projections live in
 > Lodestar. The examples below (`lodestar …`) are illustrative of a consumer.
 
-> **Status: early and experimental.** Extracted from the Fram coordination
-> tool and made domain-neutral (cardinality + projections injected by the
-> consumer). **CLI-shaped** — the payoff is the graph and the derived queries, not
-> chrome. Expect rough edges and churn.
+> **Status: early and experimental.** Extracted from a single coordination tool
+> and made domain-neutral (cardinality + projections injected by the consumer).
+> **CLI-shaped** — the payoff is the graph and the derived queries, not chrome.
+> Expect rough edges and churn.
 
 ## What it looks like
 
