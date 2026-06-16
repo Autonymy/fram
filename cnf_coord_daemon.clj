@@ -14,7 +14,7 @@
 ;; ============================================================================
 (require '[clojure.string :as str] '[clojure.edn :as edn]
          '[chelonia.cnf :as c] '[chelonia.schema :as s]
-         '[chelonia.kernel :as ck] '[chelonia.projections :as proj]
+         '[chelonia.kernel :as ck]
          '[chelonia.fold :as fold] '[chelonia.rt])
 (import '[java.net ServerSocket Socket InetSocketAddress]
         '[java.io BufferedReader InputStreamReader OutputStreamWriter BufferedWriter])
@@ -96,16 +96,11 @@
             {:ok (:ok res)})
         {:reject (:reject res) :version (:version res)}))))
 
-;; warm projections (same shapes coord.clj returns)
-(defn- lev-top [idx]
-  (->> (ck/thread-ids-i idx)
-       (remove #(ck/terminal-i? idx %))
-       (map (fn [te] [te (proj/leverage-score idx te)]))
-       (filter #(pos? (second %)))
-       ;; score desc, then id asc — a DETERMINISTIC tie-break, so the displayed
-       ;; top-10 doesn't flip on internal storage order (latent bug in the bare
-       ;; score sort; also makes flat/reified output exactly equal).
-       (sort-by (juxt (comp - second) first)) (take 10) vec))
+;; §1.2: ready/blocked/leverage are DOMAIN projections — the engine no longer
+;; serves them. The CLI/MCP fold the log locally (main/cmd-ready, cmd-json), so
+;; these daemon ops were vestigial wire-protocol surface. Dropped along with the
+;; chelonia.projections require → the daemon depends on no domain code. (:validate
+;; stays: it's kernel-level structural integrity, not lifecycle.)
 (defn- all-violations [idx]
   (->> (ck/thread-ids-i idx)
        (mapcat (fn [te] (map #(str (subs te 1) ": " %) (ck/violations-i idx te))))
@@ -120,9 +115,6 @@
       :version  {:version (current-seq @co)}
       :assert   (do-assert (:te req) (:p req) (:r req) (:base req))
       :retract  (do-retract (:te req) (:p req) (:r req) (:base req))
-      :ready    {:ready (proj/ready (index!))}
-      :blocked  {:blocked (proj/blocked (index!))}
-      :leverage {:leverage (lev-top (index!))}
       :validate {:violations (all-violations (index!))}
       :status   {:version (current-seq @co) :claims (count (c/current-claims (:store @co))) :log (or @flat-log (:log @co))}
       {:error "unknown op"})))
@@ -274,7 +266,6 @@
         total-commits (reduce + (map first rc))
         total-rejects (reduce + (map second rc))
         owner-live (count (live-cids-lp @co (s/resolve-name (:store @co) "@T") (c/value-id (:store @co) "owner")))
-        ready-ok (vector? (:ready (client port {:op :ready})))
         status (client port {:op :status})
         rp (replay (:log @co))]
     (future-cancel server)
@@ -284,7 +275,6 @@
     (let [checks [["illegal (part_of-self) writes that slipped through = 0" (zero? illegal-ok)]
                   ["owner on @T is single-valued -> exactly 1 live" (= 1 owner-live)]
                   ["contention actually fired (some rejects)" (pos? total-rejects)]
-                  [":ready served through the read-bridge" ready-ok]
                   [":status reports live claims" (pos? (:claims status))]
                   ["v2 log replays to the live view (durable)" (= (live-triples (:store @co)) (live-triples rp))]]
           fails (remove second checks)]
