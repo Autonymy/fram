@@ -8,10 +8,16 @@
   (not (empty? (incomplete-deps idx te))))
 
 (defn ready [idx]
-  (filterv (fn [te] (and (not (k/terminal-i? idx te)) (not (blocked? idx te)))) (k/thread-ids-i idx)))
+  (filterv (fn [te] (and (not (k/terminal-i? idx te)) (not (blocked? idx te)))) (k/work-thread-ids-i idx)))
 
 (defn blocked [idx]
-  (filterv (fn [te] (and (not (k/terminal-i? idx te)) (blocked? idx te))) (k/thread-ids-i idx)))
+  (filterv (fn [te] (and (not (k/terminal-i? idx te)) (blocked? idx te))) (k/work-thread-ids-i idx)))
+
+(defn ^String condition-i [idx ^String te]
+  (cond
+  (some? (k/one-i idx te "driver")) "active"
+  (some? (k/one-i idx te "committed")) (if (blocked? idx te) "blocked" "ready")
+  :else "draft"))
 
 (defn transitive-dependents [idx ^String te]
   (loop [frontier (k/dependents-i idx te)

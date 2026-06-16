@@ -17,12 +17,21 @@
 (defn ready [idx :- k/Index] :- (Vec String)
   (filterv (fn [te :- String] :- Bool
              (and (not (k/terminal-i? idx te)) (not (blocked? idx te))))
-           (k/thread-ids-i idx)))
+           (k/work-thread-ids-i idx)))
 
 (defn blocked [idx :- k/Index] :- (Vec String)
   (filterv (fn [te :- String] :- Bool
              (and (not (k/terminal-i? idx te)) (blocked? idx te)))
-           (k/thread-ids-i idx)))
+           (k/work-thread-ids-i idx)))
+
+;; Derived condition of a non-terminal work thread (shared by plate text + json):
+;;   active = has a driver · ready = committed, unblocked · blocked = committed,
+;;   blocked · draft = not committed.
+(defn condition-i [idx :- k/Index te :- String] :- String
+  (cond
+    [(some? (k/one-i idx te "driver")) "active"]
+    [(some? (k/one-i idx te "committed")) (if (blocked? idx te) "blocked" "ready")]
+    [:else "draft"]))
 
 ;; --- leverage: transitive reverse-dep walk over the prebuilt revdep index ----
 

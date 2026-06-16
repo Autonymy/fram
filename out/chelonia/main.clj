@@ -143,7 +143,7 @@
 
 (defn cmd-leverage [^String log]
   (let [idx (k/build-index (:claims (fold/fold (chelonia.rt/read-log log))))
-   cands (filterv (fn [te] (not (k/terminal-i? idx te))) (k/thread-ids-i idx))
+   cands (filterv (fn [te] (not (k/terminal-i? idx te))) (k/work-thread-ids-i idx))
    items (filterv (fn [it] (> (:score it) 0)) (mapv (fn [te] (->LevItem te (proj/leverage-score idx te))) cands))
    ranked (vec (take 15 (sort-by (fn [it] (- 0 (:score it))) items)))]
   (println "TOP UNBLOCKERS — finishing this transitively frees the most stuck threads")
@@ -185,7 +185,7 @@
 (defn cmd-agenda [^String log]
   (let [idx (k/build-index (:claims (fold/fold (chelonia.rt/read-log log))))
    today (chelonia.rt/today-iso)
-   cands (filterv (fn [te] (and (not (k/terminal-i? idx te)) (some? (k/one-i idx te "do_on")))) (k/thread-ids-i idx))
+   cands (filterv (fn [te] (and (not (k/terminal-i? idx te)) (some? (k/one-i idx te "do_on")))) (k/work-thread-ids-i idx))
    items (mapv (fn [te] (->AgendaItem te (let [d (k/one-i idx te "do_on")]
   (if (some? d) d "")))) cands)
    overdue (vec (sort-by (fn [it] (:do_on it)) (filterv (fn [it] (chelonia.rt/str-lt? (:do_on it) today)) items)))
@@ -208,18 +208,86 @@
   (doseq [te grp]
   (println (str "  " (short-id te) "  " (trunc (title-of idx te) 52)))))))
 
+(defn- in-condition [idx nonterm ^String c]
+  (filterv (fn [te] (= (proj/condition-i idx te) c)) nonterm))
+
 (defn cmd-plate [^String log]
   (let [idx (k/build-index (:claims (fold/fold (chelonia.rt/read-log log))))
-   nonterm (filterv (fn [te] (not (k/terminal-i? idx te))) (k/thread-ids-i idx))
-   active-g (filterv (fn [te] (some? (k/one-i idx te "driver"))) nonterm)
-   ready-g (filterv (fn [te] (and (some? (k/one-i idx te "committed")) (and (nil? (k/one-i idx te "driver")) (not (proj/blocked? idx te))))) nonterm)
-   blocked-g (filterv (fn [te] (and (some? (k/one-i idx te "committed")) (and (nil? (k/one-i idx te "driver")) (proj/blocked? idx te)))) nonterm)
-   draft-g (filterv (fn [te] (and (nil? (k/one-i idx te "committed")) (nil? (k/one-i idx te "driver")))) nonterm)]
+   nonterm (filterv (fn [te] (not (k/terminal-i? idx te))) (k/work-thread-ids-i idx))]
   (println (str "ON YOUR PLATE — " (count nonterm) " open"))
-  (plate-group idx "active" active-g)
-  (plate-group idx "ready" ready-g)
-  (plate-group idx "blocked" blocked-g)
-  (plate-group idx "draft" draft-g)))
+  (plate-group idx "active" (in-condition idx nonterm "active"))
+  (plate-group idx "ready" (in-condition idx nonterm "ready"))
+  (plate-group idx "blocked" (in-condition idx nonterm "blocked"))
+  (plate-group idx "draft" (in-condition idx nonterm "draft"))))
+
+(defrecord JThread [id title condition])
+
+(defn jthread-id [r] (:id r))
+
+(defn jthread-title [r] (:title r))
+
+(defn jthread-condition [r] (:condition r))
+
+(defrecord JReview [id title pred detail])
+
+(defn jreview-id [r] (:id r))
+
+(defn jreview-title [r] (:title r))
+
+(defn jreview-pred [r] (:pred r))
+
+(defn jreview-detail [r] (:detail r))
+
+(defrecord JClaim [predicate value])
+
+(defn jclaim-predicate [r] (:predicate r))
+
+(defn jclaim-value [r] (:value r))
+
+(defrecord JClockRow [id title est_h actual_sec done])
+
+(defn jclockrow-id [r] (:id r))
+
+(defn jclockrow-title [r] (:title r))
+
+(defn jclockrow-est_h [r] (:est_h r))
+
+(defn jclockrow-actual_sec [r] (:actual_sec r))
+
+(defn jclockrow-done [r] (:done r))
+
+(defrecord JCalib [pct sample])
+
+(defn jcalib-pct [r] (:pct r))
+
+(defn jcalib-sample [r] (:sample r))
+
+(defrecord JClockReport [rows calibration])
+
+(defn jclockreport-rows [r] (:rows r))
+
+(defn jclockreport-calibration [r] (:calibration r))
+
+(defn- ^JThread jthread [idx ^String te]
+  (->JThread (short-id te) (title-of idx te) (proj/condition-i idx te)))
+
+(defn cmd-json [^String log ^String what ^String arg]
+  (let [as (chelonia.rt/read-log log)
+   f (fold/fold as)
+   idx (k/build-index (:claims f))]
+  (cond
+  (= what "plate") (println (chelonia.rt/to-json (mapv (fn [te] (jthread idx te)) (filterv (fn [te] (not (k/terminal-i? idx te))) (k/work-thread-ids-i idx)))))
+  (= what "ready") (println (chelonia.rt/to-json (mapv (fn [te] (jthread idx te)) (proj/ready idx))))
+  (= what "blocked") (println (chelonia.rt/to-json (mapv (fn [te] (jthread idx te)) (proj/blocked idx))))
+  (= what "needs-review") (let [latest (fold/fold-latest as)
+   today (chelonia.rt/today-iso)
+   reviews (stale/needs-review idx latest today (fn [a b] (chelonia.rt/str-lt? a b)))]
+  (println (chelonia.rt/to-json (mapv (fn [rv] (->JReview (short-id (:te rv)) (title-of idx (:te rv)) (:pred rv) (:detail rv))) reviews))))
+  (= what "clock-report") (let [rs (clk/rows idx (fn [s] (chelonia.rt/iso-to-seconds s)) (fn [s] (chelonia.rt/parse-int s)))
+   cal (clk/calibration rs)]
+  (println (chelonia.rt/to-json (->JClockReport (mapv (fn [r] (->JClockRow (short-id (:te r)) (title-of idx (:te r)) (:est-h r) (:act-sec r) (:term r))) rs) (->JCalib (:pct cal) (:sample cal))))))
+  (= what "show") (println (chelonia.rt/to-json (mapv (fn [c] (->JClaim (:p c) (:r c))) (k/q-by-l (:claims f) (str "@" arg)))))
+  :else (println "usage: json plate|ready|blocked|needs-review|clock-report|show <id>"))))
 
 (defn cmd-needs-review [^String log]
   (let [as (chelonia.rt/read-log log)
@@ -431,6 +499,7 @@
   (= cmd "doctor") (cmd-doctor threads-dir log)
   (= cmd "watch") (cmd-watch)
   (= cmd "validate") (cmd-validate log)
+  (= cmd "json") (cmd-json log (if (> (count args) 1) (nth args 1) "") (if (> (count args) 2) (nth args 2) ""))
   (= cmd "show") (cmd-show log (if (> (count args) 1) (nth args 1) ""))
   (= cmd "set") (if (>= (count args) 4) (cmd-set log (nth args 1) (nth args 2) (nth args 3)) (println "usage: set <id> <pred> <value>"))
   (= cmd "merge") (if (>= (count args) 3) (cmd-merge log (nth args 1) (nth args 2)) (println "usage: merge <from-entity> <to-entity>"))

@@ -27,6 +27,7 @@
 (declare-extern chelonia.rt/this-week-dates [-> (Vec String)])
 (declare-extern chelonia.rt/parse-int [String -> Int])
 (declare-extern chelonia.rt/str-lt? [String String -> Bool])
+(declare-extern chelonia.rt/to-json [Any -> String])
 (declare-extern chelonia.rt/append-assertion [String fold/Assertion -> Nil])
 (declare-extern chelonia.rt/threads-dir [-> String])
 (declare-extern chelonia.rt/log-path [-> String])
@@ -207,7 +208,7 @@
 (defn cmd-leverage [log :- String] :- Nil
   (let [idx (k/build-index (:claims (fold/fold (chelonia.rt/read-log log))))
         cands (filterv (fn [te :- String] :- Bool (not (k/terminal-i? idx te)))
-                       (k/thread-ids-i idx))
+                       (k/work-thread-ids-i idx))
         items (filterv (fn [it :- LevItem] :- Bool (> (:score it) 0))
                        (mapv (fn [te :- String] :- LevItem
                                (->LevItem te (proj/leverage-score idx te)))
@@ -271,7 +272,7 @@
         today (chelonia.rt/today-iso)
         cands (filterv (fn [te :- String] :- Bool
                          (and (not (k/terminal-i? idx te)) (some? (k/one-i idx te "do_on"))))
-                       (k/thread-ids-i idx))
+                       (k/work-thread-ids-i idx))
         items (mapv (fn [te :- String] :- AgendaItem
                       (->AgendaItem te (let [d (k/one-i idx te "do_on")] (if (some? d) d ""))))
                     cands)
@@ -297,27 +298,71 @@
     (doseq [te grp]
       (println (str "  " (short-id te) "  " (trunc (title-of idx te) 52))))))
 
+(defn- in-condition [idx :- k/Index nonterm :- (Vec String) c :- String] :- (Vec String)
+  (filterv (fn [te :- String] :- Bool (= (proj/condition-i idx te) c)) nonterm))
+
 (defn cmd-plate [log :- String] :- Nil
   (let [idx (k/build-index (:claims (fold/fold (chelonia.rt/read-log log))))
         nonterm (filterv (fn [te :- String] :- Bool (not (k/terminal-i? idx te)))
-                         (k/thread-ids-i idx))
-        active-g (filterv (fn [te :- String] :- Bool (some? (k/one-i idx te "driver"))) nonterm)
-        ready-g (filterv (fn [te :- String] :- Bool
-                           (and (some? (k/one-i idx te "committed"))
-                                (and (nil? (k/one-i idx te "driver")) (not (proj/blocked? idx te)))))
-                         nonterm)
-        blocked-g (filterv (fn [te :- String] :- Bool
-                             (and (some? (k/one-i idx te "committed"))
-                                  (and (nil? (k/one-i idx te "driver")) (proj/blocked? idx te))))
-                           nonterm)
-        draft-g (filterv (fn [te :- String] :- Bool
-                           (and (nil? (k/one-i idx te "committed")) (nil? (k/one-i idx te "driver"))))
-                         nonterm)]
+                         (k/work-thread-ids-i idx))]
     (println (str "ON YOUR PLATE — " (count nonterm) " open"))
-    (plate-group idx "active" active-g)
-    (plate-group idx "ready" ready-g)
-    (plate-group idx "blocked" blocked-g)
-    (plate-group idx "draft" draft-g)))
+    (plate-group idx "active" (in-condition idx nonterm "active"))
+    (plate-group idx "ready" (in-condition idx nonterm "ready"))
+    (plate-group idx "blocked" (in-condition idx nonterm "blocked"))
+    (plate-group idx "draft" (in-condition idx nonterm "draft"))))
+
+;; --- structured (JSON) projections for the MCP edge --------------------------
+;; Reuse the exact projection functions; just shape rows into records and let
+;; cheshire serialize. One source of truth — no parallel logic.
+(defrecord JThread [id :- String title :- String condition :- String])
+(defrecord JReview [id :- String title :- String pred :- String detail :- String])
+(defrecord JClaim [predicate :- String value :- String])
+(defrecord JClockRow [id :- String title :- String est_h :- Int actual_sec :- Int done :- Bool])
+(defrecord JCalib [pct :- Int sample :- Int])
+(defrecord JClockReport [rows :- (Vec JClockRow) calibration :- JCalib])
+
+(defn- jthread [idx :- k/Index te :- String] :- JThread
+  (->JThread (short-id te) (title-of idx te) (proj/condition-i idx te)))
+
+(defn cmd-json [log :- String what :- String arg :- String] :- Nil
+  (let [as (chelonia.rt/read-log log)
+        f (fold/fold as)
+        idx (k/build-index (:claims f))]
+    (cond
+      [(= what "plate")
+       (println (chelonia.rt/to-json
+                 (mapv (fn [te :- String] :- JThread (jthread idx te))
+                       (filterv (fn [te :- String] :- Bool (not (k/terminal-i? idx te)))
+                                (k/work-thread-ids-i idx)))))]
+      [(= what "ready")
+       (println (chelonia.rt/to-json (mapv (fn [te :- String] :- JThread (jthread idx te)) (proj/ready idx))))]
+      [(= what "blocked")
+       (println (chelonia.rt/to-json (mapv (fn [te :- String] :- JThread (jthread idx te)) (proj/blocked idx))))]
+      [(= what "needs-review")
+       (let [latest (fold/fold-latest as)
+             today (chelonia.rt/today-iso)
+             reviews (stale/needs-review idx latest today
+                                         (fn [a :- String b :- String] :- Bool (chelonia.rt/str-lt? a b)))]
+         (println (chelonia.rt/to-json
+                   (mapv (fn [rv :- stale/Review] :- JReview
+                           (->JReview (short-id (:te rv)) (title-of idx (:te rv)) (:pred rv) (:detail rv)))
+                         reviews))))]
+      [(= what "clock-report")
+       (let [rs (clk/rows idx
+                          (fn [s :- String] :- Int (chelonia.rt/iso-to-seconds s))
+                          (fn [s :- String] :- Int (chelonia.rt/parse-int s)))
+             cal (clk/calibration rs)]
+         (println (chelonia.rt/to-json
+                   (->JClockReport
+                    (mapv (fn [r :- clk/Row] :- JClockRow
+                            (->JClockRow (short-id (:te r)) (title-of idx (:te r)) (:est-h r) (:act-sec r) (:term r)))
+                          rs)
+                    (->JCalib (:pct cal) (:sample cal))))))]
+      [(= what "show")
+       (println (chelonia.rt/to-json
+                 (mapv (fn [c :- k/Claim] :- JClaim (->JClaim (:p c) (:r c)))
+                       (k/q-by-l (:claims f) (str "@" arg)))))]
+      [:else (println "usage: json plate|ready|blocked|needs-review|clock-report|show <id>")])))
 
 ;; Belief-revision view (D8): judgments whose inputs moved since they were made,
 ;; plus uncommitted drafts that grew real structure. Never auto-flips anything —
@@ -639,6 +684,9 @@
       [(= cmd "doctor")   (cmd-doctor threads-dir log)]
       [(= cmd "watch")    (cmd-watch)]
       [(= cmd "validate") (cmd-validate log)]
+      [(= cmd "json")
+       (cmd-json log (if (> (count args) 1) (nth args 1) "")
+                 (if (> (count args) 2) (nth args 2) ""))]
       [(= cmd "show")     (cmd-show log (if (> (count args) 1) (nth args 1) ""))]
       [(= cmd "set")
        (if (>= (count args) 4)

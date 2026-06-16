@@ -105,6 +105,12 @@
 (defn thread-ids-i [^Index idx]
   (filterv (fn [s] (some? (one-i idx s "title"))) (:subjects idx)))
 
+(defn ^Boolean anchor-i? [^Index idx ^String te]
+  (= (one-i idx te "source") "migrated"))
+
+(defn work-thread-ids-i [^Index idx]
+  (filterv (fn [s] (not (anchor-i? idx s))) (thread-ids-i idx)))
+
 (defn ^Boolean terminal-i? [^Index idx ^String te]
   (or (some? (one-i idx te "outcome")) (some? (one-i idx te "abandoned"))))
 

@@ -8,7 +8,12 @@
   (:require [clojure.string :as str]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [cheshire.core :as cheshire]
             [chelonia.fold :as fold]))
+
+;; Serialize any value (records serialize as objects keyed by field name; vectors
+;; as arrays) to JSON — the engine's structured-output path for the MCP edge.
+(defn to-json [x] (cheshire/generate-string x))
 
 ;; --- file IO ----------------------------------------------------------------
 

@@ -47,25 +47,25 @@
 ;; tool name -> {desc, schema, argv}. argv maps the JSON arguments map (string
 ;; keys) to the engine argument vector.
 (def tools
-  [{:name "ready"        :desc "Threads doable now (committed, unblocked, not active, not done)."
-    :schema {:type "object" :properties {}} :argv (fn [_] ["ready"])}
+  [{:name "ready"        :desc "Threads doable now (committed, unblocked, not active, not done). Returns JSON [{id,title,condition}]."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["json" "ready"])}
    {:name "next"         :desc "The recommended next thread(s) to pull."
     :schema {:type "object" :properties {}} :argv (fn [_] ["next"])}
-   {:name "plate"        :desc "Everything open, bucketed by derived condition (active/ready/blocked/draft)."
-    :schema {:type "object" :properties {}} :argv (fn [_] ["plate"])}
-   {:name "blocked"      :desc "Threads waiting on an unresolved dependency."
-    :schema {:type "object" :properties {}} :argv (fn [_] ["blocked"])}
+   {:name "plate"        :desc "Everything open, bucketed by derived condition. Returns JSON [{id,title,condition}] where condition is active/ready/blocked/draft."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["json" "plate"])}
+   {:name "blocked"      :desc "Threads waiting on an unresolved dependency. Returns JSON [{id,title,condition}]."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["json" "blocked"])}
    {:name "agenda"       :desc "Calendar view: threads bucketed by do_on (overdue/today/upcoming)."
     :schema {:type "object" :properties {}} :argv (fn [_] ["agenda"])}
    {:name "leverage"     :desc "High-leverage threads — finishing them unblocks the most downstream work."
     :schema {:type "object" :properties {}} :argv (fn [_] ["leverage"])}
-   {:name "needs_review" :desc "Belief-revision queue: judgments whose inputs moved + promotable drafts."
-    :schema {:type "object" :properties {}} :argv (fn [_] ["needs-review"])}
+   {:name "needs_review" :desc "Belief-revision queue: judgments whose inputs moved. Returns JSON [{id,title,pred,detail}]."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["json" "needs-review"])}
    {:name "validate"     :desc "Integrity check over the whole graph."
     :schema {:type "object" :properties {}} :argv (fn [_] ["validate"])}
-   {:name "show"         :desc "Show one thread's claims + body. Accepts an id, slug, or substring."
+   {:name "show"         :desc "Show one thread's claims. Returns JSON [{predicate,value}]."
     :schema {:type "object" :properties {:id {:type "string"}} :required ["id"]}
-    :argv (fn [a] ["show" (get a "id")])}
+    :argv (fn [a] ["json" "show" (get a "id")])}
    {:name "capture"      :desc "Create a new thread from a title (a thought or unit of work)."
     :schema {:type "object" :properties {:title {:type "string"}
                                          :owner {:type "string" :description "defaults to personal"}}
@@ -90,8 +90,8 @@
     :schema {:type "object" :properties {}} :argv (fn [_] ["clock" "stop"])}
    {:name "clock_status" :desc "Show the running session + elapsed."
     :schema {:type "object" :properties {}} :argv (fn [_] ["clock" "status"])}
-   {:name "clock_report" :desc "Estimate vs actual per thread + calibration %."
-    :schema {:type "object" :properties {}} :argv (fn [_] ["clock" "report"])}])
+   {:name "clock_report" :desc "Estimate vs actual per thread + calibration %. Returns JSON {rows:[{id,title,est_h,actual_sec,done}],calibration:{pct,sample}}."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["json" "clock-report"])}])
 
 (defn find-tool [nm] (first (filter #(= (:name %) nm) tools)))
 

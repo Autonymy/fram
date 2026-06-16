@@ -172,6 +172,18 @@
 (defn thread-ids-i [idx :- Index] :- (Vec String)
   (filterv (fn [s :- String] :- Bool (some? (one-i idx s "title"))) (:subjects idx)))
 
+;; A grouping anchor: a node synthesized only to be a relates_to target (former
+;; tags, stamped source "migrated"), never authored work. It's a valid edge
+;; target (validation still sees it) but NOT actionable, so WORK projections
+;; exclude it. Discriminator is structural (a claim value), not the id prefix.
+(defn anchor-i? [idx :- Index te :- String] :- Bool
+  (= (one-i idx te "source") "migrated"))
+
+;; thread ids that are actual work (anchors excluded) — the basis for plate/
+;; ready/next/leverage/agenda. validate keeps using thread-ids-i (sees anchors).
+(defn work-thread-ids-i [idx :- Index] :- (Vec String)
+  (filterv (fn [s :- String] :- Bool (not (anchor-i? idx s))) (thread-ids-i idx)))
+
 (defn terminal-i? [idx :- Index te :- String] :- Bool
   (or (some? (one-i idx te "outcome")) (some? (one-i idx te "abandoned"))))
 
