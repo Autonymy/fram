@@ -185,8 +185,13 @@
         ;; missing a field — and fold itself calls single? on :p, so the incomplete
         ;; line must be dropped pre-fold. A torn line is an incomplete write that
         ;; must NOT apply (the writer retries).
-        asserts (filter #(and (:l %) (:p %) (:r %)) (chelonia.rt/read-log flat))
-        flat-max-tx (reduce max 0 (map #(or (:tx %) 0) asserts))
+        raw (chelonia.rt/read-log flat)
+        ;; max :tx over ALL parsed lines — same set fold/max-tx (doctor's log-v)
+        ;; counts, INCLUDING a torn tail (EDN-valid but missing :r). Seeding over
+        ;; only the filtered asserts would lag by one when the tail is torn and make
+        ;; doctor report STALE; matching fold keeps doctor FRESH.
+        flat-max-tx (reduce max 0 (map #(or (:tx %) 0) raw))
+        asserts (filter #(and (:l %) (:p %) (:r %)) raw)
         claims (:claims (fold/fold (vec asserts)))
         by-pred (group-by :p claims)
         st (c/new-store)

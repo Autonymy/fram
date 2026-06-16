@@ -68,7 +68,15 @@
   (try (= (set (map (fn [cl] [(:l cl) (:p cl) (:r cl)]) (:claims (fold/fold (chelonia.rt/read-log flat)))))
           (domain-triples (:store @co)))
        (catch Throwable _ false)))
-(def version-fresh (= (current-seq @co) (:version (fold/fold (vec (filter #(and (:l %) (:p %) (:r %)) (chelonia.rt/read-log flat)))))))
+;; doctor computes log-v = (:version (fold (read-log flat))) over ALL parsed lines
+;; (UNFILTERED), so daemon-v (current-seq) must match THAT, not the filtered fold.
+(def version-fresh (= (current-seq @co) (:version (fold/fold (chelonia.rt/read-log flat)))))
+;; ...and it must stay FRESH even with a torn tail (the live log is append-no-fsync,
+;; so an EDN-valid-but-incomplete tail line is a realistic standing condition).
+(with-open [os (java.io.FileOutputStream. flat true)]
+  (.write os (.getBytes (str (pr-str {:tx 7777777 :op "assert" :l "@torn-tail" :p "title"}) "\n") "UTF-8")))
+(client port {:op :status})    ; trigger maybe-reload! over the torn tail
+(def fresh-with-torn-tail (= (current-seq @co) (:version (fold/fold (chelonia.rt/read-log flat)))))
 
 (def checks
   [["boot: reified live view == flat fold" boot-equal]
@@ -81,7 +89,8 @@
    ["base_version: the rest conflict" (= 5 (count (filter #(= :conflict (:reject %)) race)))]
    ["NO v2 :k-records pollute the canonical flat log" no-v2-pollution]
    ["REAL cold fold (unfiltered) succeeds AND == reified view" cold-fold-ok]
-   [":version == flat fold version (doctor reports FRESH)" version-fresh]])
+   [":version == flat fold version (doctor reports FRESH)" version-fresh]
+   [":version stays FRESH with a torn tail (no false STALE)" fresh-with-torn-tail]])
 
 (println "boot live:" (count (flat-set flat)))
 (let [fails (remove second checks)]
