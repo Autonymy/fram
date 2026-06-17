@@ -3,78 +3,81 @@
             [fram.query :as q]
             [clojure.string :as str]))
 
-^{:line 21 :file "/home/tom/code/fram/src/fram/tools.bclj"} (defn- at [id]
-  ^{:line 22 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 22 :file "/home/tom/code/fram/src/fram/tools.bclj"} (string? id) ^{:line 22 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 22 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str/starts-with? id "@") id ^{:line 22 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "@" id)) id))
+(defn- at [id]
+  (if (string? id) (if (str/starts-with? id "@") id (str "@" id)) id))
 
-^{:line 24 :file "/home/tom/code/fram/src/fram/tools.bclj"} (defn- distinct-preds [claims]
-  ^{:line 25 :file "/home/tom/code/fram/src/fram/tools.bclj"} (vec ^{:line 25 :file "/home/tom/code/fram/src/fram/tools.bclj"} (sort ^{:line 25 :file "/home/tom/code/fram/src/fram/tools.bclj"} (reduce ^{:line 25 :file "/home/tom/code/fram/src/fram/tools.bclj"} (fn [acc c] ^{:line 25 :file "/home/tom/code/fram/src/fram/tools.bclj"} (conj acc ^{:line 25 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:p c))) ^{:line 25 :file "/home/tom/code/fram/src/fram/tools.bclj"} #{} claims))))
+(defn- distinct-preds [claims]
+  (vec (sort (reduce (fn [acc c] (conj acc (:p c))) #{} claims))))
 
-^{:line 28 :file "/home/tom/code/fram/src/fram/tools.bclj"} (defn- ^Boolean ref-pred? [claims ^String pred]
-  ^{:line 29 :file "/home/tom/code/fram/src/fram/tools.bclj"} (loop [cs claims]
-  ^{:line 30 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 30 :file "/home/tom/code/fram/src/fram/tools.bclj"} (empty? cs) false ^{:line 32 :file "/home/tom/code/fram/src/fram/tools.bclj"} (let [c ^{:line 32 :file "/home/tom/code/fram/src/fram/tools.bclj"} (first cs)]
-  ^{:line 33 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 33 :file "/home/tom/code/fram/src/fram/tools.bclj"} (and ^{:line 33 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= ^{:line 33 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:p c) pred) ^{:line 33 :file "/home/tom/code/fram/src/fram/tools.bclj"} (string? ^{:line 33 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:r c)) ^{:line 33 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str/starts-with? ^{:line 33 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:r c) "@")) true ^{:line 35 :file "/home/tom/code/fram/src/fram/tools.bclj"} (recur ^{:line 35 :file "/home/tom/code/fram/src/fram/tools.bclj"} (rest cs)))))))
+(defn- ^Boolean ref-pred? [claims ^String pred]
+  (loop [cs claims]
+  (if (empty? cs) false (let [c (first cs)]
+  (if (and (= (:p c) pred) (string? (:r c)) (str/starts-with? (:r c) "@")) true (recur (rest cs)))))))
 
-^{:line 45 :file "/home/tom/code/fram/src/fram/tools.bclj"} (defn- ^Boolean all-ref? [claims ^String pred]
-  ^{:line 46 :file "/home/tom/code/fram/src/fram/tools.bclj"} (loop [cs claims
+(defn- ^Boolean all-ref? [claims ^String pred]
+  (loop [cs claims
    seen false]
-  ^{:line 47 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 47 :file "/home/tom/code/fram/src/fram/tools.bclj"} (empty? cs) seen ^{:line 49 :file "/home/tom/code/fram/src/fram/tools.bclj"} (let [c ^{:line 49 :file "/home/tom/code/fram/src/fram/tools.bclj"} (first cs)]
-  ^{:line 50 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 50 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= ^{:line 50 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:p c) pred) ^{:line 51 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 51 :file "/home/tom/code/fram/src/fram/tools.bclj"} (and ^{:line 51 :file "/home/tom/code/fram/src/fram/tools.bclj"} (string? ^{:line 51 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:r c)) ^{:line 51 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str/starts-with? ^{:line 51 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:r c) "@")) ^{:line 52 :file "/home/tom/code/fram/src/fram/tools.bclj"} (recur ^{:line 52 :file "/home/tom/code/fram/src/fram/tools.bclj"} (rest cs) true) false) ^{:line 54 :file "/home/tom/code/fram/src/fram/tools.bclj"} (recur ^{:line 54 :file "/home/tom/code/fram/src/fram/tools.bclj"} (rest cs) seen))))))
+  (if (empty? cs) seen (let [c (first cs)]
+  (if (= (:p c) pred) (if (and (string? (:r c)) (str/starts-with? (:r c) "@")) (recur (rest cs) true) false) (recur (rest cs) seen))))))
 
-^{:line 58 :file "/home/tom/code/fram/src/fram/tools.bclj"} (defn- pred-tools [claims ^String pred]
-  ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (let [single ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (k/single? pred)
-   ref ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (ref-pred? claims pred)
-   id-param ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name "id" :type "string" :required true}]
-   idv-param ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name "id" :type "string" :required true} ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name "value" :type "string" :required true}]
-   reads ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if single ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str pred "-of") :desc ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "Get the " pred " of <id> (single-valued).") :params id-param :op :one :pred pred}] ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str pred "-list") :desc ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "List the " pred " values of <id>.") :params id-param :op :many :pred pred}])
-   revs ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ref ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str pred "-from") :desc ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "Entities whose " pred " points at <id> (reverse edge).") :params id-param :op :revfrom :pred pred}] ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} [])
-   writes ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if single ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "set-" pred) :desc ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "Set the " pred " of <id> to <value> (replaces; single-valued).") :params idv-param :op :set :pred pred}] ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "add-" pred) :desc ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "Add <value> to the " pred " of <id>.") :params idv-param :op :add :pred pred} ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "remove-" pred) :desc ^{:line 59 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "Remove <value> from the " pred " of <id>.") :params idv-param :op :remove :pred pred}])]
-  ^{:line 81 :file "/home/tom/code/fram/src/fram/tools.bclj"} (vec ^{:line 81 :file "/home/tom/code/fram/src/fram/tools.bclj"} (concat reads ^{:line 81 :file "/home/tom/code/fram/src/fram/tools.bclj"} (concat revs writes)))))
+(defn ref-value [claims ^String pred value]
+  (if (all-ref? claims pred) (at value) value))
 
-^{:line 86 :file "/home/tom/code/fram/src/fram/tools.bclj"} (defn- dedupe-by-name [specs]
-  ^{:line 87 :file "/home/tom/code/fram/src/fram/tools.bclj"} (loop [ss specs
-   seen ^{:line 87 :file "/home/tom/code/fram/src/fram/tools.bclj"} #{}
-   out ^{:line 87 :file "/home/tom/code/fram/src/fram/tools.bclj"} []]
-  ^{:line 88 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 88 :file "/home/tom/code/fram/src/fram/tools.bclj"} (empty? ss) out ^{:line 90 :file "/home/tom/code/fram/src/fram/tools.bclj"} (let [s ^{:line 90 :file "/home/tom/code/fram/src/fram/tools.bclj"} (first ss)
-   nm ^{:line 90 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:name s)]
-  ^{:line 91 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 91 :file "/home/tom/code/fram/src/fram/tools.bclj"} (contains? seen nm) ^{:line 92 :file "/home/tom/code/fram/src/fram/tools.bclj"} (recur ^{:line 92 :file "/home/tom/code/fram/src/fram/tools.bclj"} (rest ss) seen out) ^{:line 93 :file "/home/tom/code/fram/src/fram/tools.bclj"} (recur ^{:line 93 :file "/home/tom/code/fram/src/fram/tools.bclj"} (rest ss) ^{:line 93 :file "/home/tom/code/fram/src/fram/tools.bclj"} (conj seen nm) ^{:line 93 :file "/home/tom/code/fram/src/fram/tools.bclj"} (conj out s)))))))
+(defn- pred-tools [claims ^String pred]
+  (let [single (k/single? pred)
+   ref (ref-pred? claims pred)
+   id-param [{:name "id" :type "string" :required true}]
+   idv-param [{:name "id" :type "string" :required true} {:name "value" :type "string" :required true}]
+   reads (if single [{:name (str pred "-of") :desc (str "Get the " pred " of <id> (single-valued).") :params id-param :op :one :pred pred}] [{:name (str pred "-list") :desc (str "List the " pred " values of <id>.") :params id-param :op :many :pred pred}])
+   revs (if ref [{:name (str pred "-from") :desc (str "Entities whose " pred " points at <id> (reverse edge).") :params id-param :op :revfrom :pred pred}] [])
+   writes (if single [{:name (str "set-" pred) :desc (str "Set the " pred " of <id> to <value> (replaces; single-valued).") :params idv-param :op :set :pred pred}] [{:name (str "add-" pred) :desc (str "Add <value> to the " pred " of <id>.") :params idv-param :op :add :pred pred} {:name (str "remove-" pred) :desc (str "Remove <value> from the " pred " of <id>.") :params idv-param :op :remove :pred pred}])]
+  (vec (concat reads (concat revs writes)))))
 
-^{:line 95 :file "/home/tom/code/fram/src/fram/tools.bclj"} (defn catalog [claims]
-  ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} (let [structural ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name "threads" :desc "List all threads (entities with a title) as {id,title}." :params ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} [] :op :threads :pred ""} ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name "show" :desc "All claims about <id>." :params ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name "id" :type "string" :required true}] :op :show :pred ""} ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name "dependents-of" :desc "Threads that depend_on <id> (reverse depends_on)." :params ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name "id" :type "string" :required true}] :op :dependents :pred ""} ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name "validate" :desc "Structural integrity violations (cycles, dangling refs) across all threads." :params ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} [] :op :validate :pred ""} ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name "query" :desc ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "Ad-hoc recursive query for multi-hop questions no named tool covers. " "Pass a structured Datalog-shaped object: " "{:find <rel> :rules [{:head {:rel R :args [terms]} :body [{:rel r :args [terms] :neg <bool>}]}]}. " "A term is {:var \"x\"} or a constant; base relations are triple(l,p,r) and claim(cid,l,p,r).") :params ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:name "query" :type "object" :required true}] :op :query :pred ""}]
-   per-pred ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} (reduce ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} (fn [acc pred] ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} (vec ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} (concat acc ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} (pred-tools claims pred)))) ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} [] ^{:line 96 :file "/home/tom/code/fram/src/fram/tools.bclj"} (distinct-preds claims))]
-  ^{:line 114 :file "/home/tom/code/fram/src/fram/tools.bclj"} (dedupe-by-name ^{:line 114 :file "/home/tom/code/fram/src/fram/tools.bclj"} (vec ^{:line 114 :file "/home/tom/code/fram/src/fram/tools.bclj"} (concat structural per-pred)))))
+(defn- dedupe-by-name [specs]
+  (loop [ss specs
+   seen #{}
+   out []]
+  (if (empty? ss) out (let [s (first ss)
+   nm (:name s)]
+  (if (contains? seen nm) (recur (rest ss) seen out) (recur (rest ss) (conj seen nm) (conj out s)))))))
 
-^{:line 117 :file "/home/tom/code/fram/src/fram/tools.bclj"} (defn- spec-by-name [cat ^String name]
-  ^{:line 118 :file "/home/tom/code/fram/src/fram/tools.bclj"} (loop [cs cat]
-  ^{:line 119 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 119 :file "/home/tom/code/fram/src/fram/tools.bclj"} (empty? cs) nil ^{:line 121 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 121 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= ^{:line 121 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:name ^{:line 121 :file "/home/tom/code/fram/src/fram/tools.bclj"} (first cs)) name) ^{:line 121 :file "/home/tom/code/fram/src/fram/tools.bclj"} (first cs) ^{:line 121 :file "/home/tom/code/fram/src/fram/tools.bclj"} (recur ^{:line 121 :file "/home/tom/code/fram/src/fram/tools.bclj"} (rest cs))))))
+(defn catalog [claims]
+  (let [structural [{:name "threads" :desc "List all threads (entities with a title) as {id,title}." :params [] :op :threads :pred ""} {:name "show" :desc "All claims about <id>." :params [{:name "id" :type "string" :required true}] :op :show :pred ""} {:name "dependents-of" :desc "Threads that depend_on <id> (reverse depends_on)." :params [{:name "id" :type "string" :required true}] :op :dependents :pred ""} {:name "validate" :desc "Structural integrity violations (cycles, dangling refs) across all threads." :params [] :op :validate :pred ""} {:name "query" :desc (str "Ad-hoc recursive query for multi-hop questions no named tool covers. " "Pass a structured Datalog-shaped object: " "{:find <rel> :rules [{:head {:rel R :args [terms]} :body [{:rel r :args [terms] :neg <bool>}]}]}. " "A term is {:var \"x\"} or a constant; base relations are triple(l,p,r) and claim(cid,l,p,r).") :params [{:name "query" :type "object" :required true}] :op :query :pred ""}]
+   per-pred (reduce (fn [acc pred] (vec (concat acc (pred-tools claims pred)))) [] (distinct-preds claims))]
+  (dedupe-by-name (vec (concat structural per-pred)))))
 
-^{:line 125 :file "/home/tom/code/fram/src/fram/tools.bclj"} (defn- missing-req [op args]
-  ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (let [need-id ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (or ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :one) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (or ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :many) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (or ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :revfrom) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (or ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :show) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (or ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :dependents) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (or ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :set) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (or ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :add) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :remove))))))))
-   need-val ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (or ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :set) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (or ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :add) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :remove)))
-   e1 ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (and need-id ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (nil? ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:id args))) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} ["missing required param 'id'"] ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} [])
-   e2 ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (and need-val ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (nil? ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:value args))) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} ["missing required param 'value'"] ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} [])
-   e3 ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (and ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :query) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (nil? ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:query args))) ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} ["missing required param 'query'"] ^{:line 126 :file "/home/tom/code/fram/src/fram/tools.bclj"} [])]
-  ^{:line 132 :file "/home/tom/code/fram/src/fram/tools.bclj"} (vec ^{:line 132 :file "/home/tom/code/fram/src/fram/tools.bclj"} (concat e1 ^{:line 132 :file "/home/tom/code/fram/src/fram/tools.bclj"} (concat e2 e3)))))
+(defn- spec-by-name [cat ^String name]
+  (loop [cs cat]
+  (if (empty? cs) nil (if (= (:name (first cs)) name) (first cs) (recur (rest cs))))))
 
-^{:line 136 :file "/home/tom/code/fram/src/fram/tools.bclj"} (defn call [claims idx cat ^String tool args]
-  ^{:line 137 :file "/home/tom/code/fram/src/fram/tools.bclj"} (let [spec ^{:line 137 :file "/home/tom/code/fram/src/fram/tools.bclj"} (spec-by-name cat tool)]
-  ^{:line 138 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 138 :file "/home/tom/code/fram/src/fram/tools.bclj"} (nil? spec) ^{:line 139 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:error ^{:line 139 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 139 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "unknown tool '" tool "' — call `tools` for the catalog")]} ^{:line 140 :file "/home/tom/code/fram/src/fram/tools.bclj"} (let [op ^{:line 140 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:op spec)
-   pred ^{:line 140 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:pred spec)
-   miss ^{:line 140 :file "/home/tom/code/fram/src/fram/tools.bclj"} (missing-req op args)]
-  ^{:line 142 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 142 :file "/home/tom/code/fram/src/fram/tools.bclj"} (not ^{:line 142 :file "/home/tom/code/fram/src/fram/tools.bclj"} (empty? miss)) ^{:line 143 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:error miss} ^{:line 144 :file "/home/tom/code/fram/src/fram/tools.bclj"} (let [id ^{:line 144 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:id args)
-   value ^{:line 144 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:value args)
-   te ^{:line 144 :file "/home/tom/code/fram/src/fram/tools.bclj"} (at id)
-   rv ^{:line 144 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 144 :file "/home/tom/code/fram/src/fram/tools.bclj"} (all-ref? claims pred) ^{:line 144 :file "/home/tom/code/fram/src/fram/tools.bclj"} (at value) value)]
-  ^{:line 147 :file "/home/tom/code/fram/src/fram/tools.bclj"} (cond
-  ^{:line 148 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :one) ^{:line 148 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:rows ^{:line 148 :file "/home/tom/code/fram/src/fram/tools.bclj"} (let [v ^{:line 148 :file "/home/tom/code/fram/src/fram/tools.bclj"} (k/one-i idx te pred)]
-  ^{:line 148 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 148 :file "/home/tom/code/fram/src/fram/tools.bclj"} (some? v) ^{:line 148 :file "/home/tom/code/fram/src/fram/tools.bclj"} [v] ^{:line 148 :file "/home/tom/code/fram/src/fram/tools.bclj"} []))}
-  ^{:line 149 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :many) ^{:line 149 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:rows ^{:line 149 :file "/home/tom/code/fram/src/fram/tools.bclj"} (k/many-i idx te pred)}
-  ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :revfrom) ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:rows ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} (reduce ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} (fn [acc c] ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} (if ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} (and ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:p c) pred) ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:r c) te)) ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} (conj acc ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:l c)) acc)) ^{:line 150 :file "/home/tom/code/fram/src/fram/tools.bclj"} [] claims)}
-  ^{:line 153 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :threads) ^{:line 153 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:rows ^{:line 153 :file "/home/tom/code/fram/src/fram/tools.bclj"} (mapv ^{:line 153 :file "/home/tom/code/fram/src/fram/tools.bclj"} (fn [t] ^{:line 153 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:id t :title ^{:line 153 :file "/home/tom/code/fram/src/fram/tools.bclj"} (k/one-i idx t "title")}) ^{:line 153 :file "/home/tom/code/fram/src/fram/tools.bclj"} (k/thread-ids-i idx))}
-  ^{:line 155 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :show) ^{:line 155 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:rows ^{:line 155 :file "/home/tom/code/fram/src/fram/tools.bclj"} (mapv ^{:line 155 :file "/home/tom/code/fram/src/fram/tools.bclj"} (fn [c] ^{:line 155 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:pred ^{:line 155 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:p c) :value ^{:line 155 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:r c)}) ^{:line 155 :file "/home/tom/code/fram/src/fram/tools.bclj"} (k/q-by-l claims te))}
-  ^{:line 157 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :dependents) ^{:line 157 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:rows ^{:line 157 :file "/home/tom/code/fram/src/fram/tools.bclj"} (k/dependents-i idx te)}
-  ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :validate) ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:rows ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} (reduce ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} (fn [acc t] ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} (vec ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} (concat acc ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} (mapv ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} (fn [v] ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:thread t :violation v}) ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} (k/violations-i idx t))))) ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} [] ^{:line 158 :file "/home/tom/code/fram/src/fram/tools.bclj"} (k/thread-ids-i idx))}
-  ^{:line 162 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :query) ^{:line 162 :file "/home/tom/code/fram/src/fram/tools.bclj"} (q/run claims ^{:line 162 :file "/home/tom/code/fram/src/fram/tools.bclj"} (:query args))
-  ^{:line 163 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :set) ^{:line 163 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:write ^{:line 163 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:op "assert" :l te :p pred :r rv}}
-  ^{:line 164 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :add) ^{:line 164 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:write ^{:line 164 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:op "assert" :l te :p pred :r rv}}
-  ^{:line 165 :file "/home/tom/code/fram/src/fram/tools.bclj"} (= op :remove) ^{:line 165 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:write ^{:line 165 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:op "retract" :l te :p pred :r rv}}
-  :else ^{:line 166 :file "/home/tom/code/fram/src/fram/tools.bclj"} {:error ^{:line 166 :file "/home/tom/code/fram/src/fram/tools.bclj"} [^{:line 166 :file "/home/tom/code/fram/src/fram/tools.bclj"} (str "unhandled op for tool '" tool "'")]})))))))
+(defn- missing-req [op args]
+  (let [need-id (or (= op :one) (or (= op :many) (or (= op :revfrom) (or (= op :show) (or (= op :dependents) (or (= op :set) (or (= op :add) (= op :remove))))))))
+   need-val (or (= op :set) (or (= op :add) (= op :remove)))
+   e1 (if (and need-id (nil? (:id args))) ["missing required param 'id'"] [])
+   e2 (if (and need-val (nil? (:value args))) ["missing required param 'value'"] [])
+   e3 (if (and (= op :query) (nil? (:query args))) ["missing required param 'query'"] [])]
+  (vec (concat e1 (concat e2 e3)))))
+
+(defn call [claims idx cat ^String tool args]
+  (let [spec (spec-by-name cat tool)]
+  (if (nil? spec) {:error [(str "unknown tool '" tool "' — call `tools` for the catalog")]} (let [op (:op spec)
+   pred (:pred spec)
+   miss (missing-req op args)]
+  (if (not (empty? miss)) {:error miss} (let [id (:id args)
+   value (:value args)
+   te (at id)
+   rv (ref-value claims pred value)]
+  (cond
+  (= op :one) {:rows (let [v (k/one-i idx te pred)]
+  (if (some? v) [v] []))}
+  (= op :many) {:rows (k/many-i idx te pred)}
+  (= op :revfrom) {:rows (reduce (fn [acc c] (if (and (= (:p c) pred) (= (:r c) te)) (conj acc (:l c)) acc)) [] claims)}
+  (= op :threads) {:rows (mapv (fn [t] {:id t :title (k/one-i idx t "title")}) (k/thread-ids-i idx))}
+  (= op :show) {:rows (mapv (fn [c] {:pred (:p c) :value (:r c)}) (k/q-by-l claims te))}
+  (= op :dependents) {:rows (k/dependents-i idx te)}
+  (= op :validate) {:rows (reduce (fn [acc t] (vec (concat acc (mapv (fn [v] {:thread t :violation v}) (k/violations-i idx t))))) [] (k/thread-ids-i idx))}
+  (= op :query) (q/run claims (:query args))
+  (= op :set) {:write {:op "assert" :l te :p pred :r rv}}
+  (= op :add) {:write {:op "assert" :l te :p pred :r rv}}
+  (= op :remove) {:write {:op "retract" :l te :p pred :r rv}}
+  :else {:error [(str "unhandled op for tool '" tool "'")]})))))))

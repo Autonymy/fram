@@ -38,10 +38,11 @@
 ;; predicate, so a bare write value is auto-@-prefixed. A MIXED predicate is NOT
 ;; pure-ref, so its literal values are stored verbatim (no spurious @-prefix that
 ;; would make remove-P silently miss the real claim).
-;; NB: this value-driven normalization is the tool/MCP write convention; the `tell`
-;; / `set` CLI verbs (main.bclj) still use a fixed ref-pred list (depends_on /
-;; part_of / relates_to). Unifying the two write surfaces is a known follow-up
-;; (deferred to avoid changing the existing tell/set behavior a consumer relies on).
+;; This value-driven normalization is the single write convention for both the
+;; tool/MCP surface AND the `tell`/`set` CLI verbs (main.bclj routes through
+;; `ref-value` below) — no hardcoded ref-pred list, so the engine stays
+;; domain-neutral. (A value already starting with @ is kept as-is; `at` never
+;; double-prefixes.)
 (defn- all-ref? [claims :- (Vec k/Claim) pred :- String] :- Bool
   (loop [cs claims seen false]
     (if (empty? cs)
@@ -52,6 +53,12 @@
             (recur (rest cs) true)
             false)
           (recur (rest cs) seen))))))
+
+;; the shared write-value normalization: @-prefix a bare value for a pure-reference
+;; predicate, store verbatim otherwise (`at` keeps an already-@ value as-is). Used by
+;; tool writes AND the CLI tell/set verbs so both surfaces agree.
+(defn ref-value [claims :- (Vec k/Claim) pred :- String value :- Any] :- Any
+  (if (all-ref? claims pred) (at value) value))
 
 ;; --- catalog: derive the tool specs from the vocabulary ----------------------
 ;; spec = {:name :desc :params [{:name :type :required}] :op <kw> :pred <string>}
@@ -143,7 +150,7 @@
           {:error miss}
           (let [id (:id args) value (:value args)
                 te (at id)
-                rv (if (all-ref? claims pred) (at value) value)]
+                rv (ref-value claims pred value)]
             (cond
               [(= op :one)        {:rows (let [v (k/one-i idx te pred)] (if (some? v) [v] []))}]
               [(= op :many)       {:rows (k/many-i idx te pred)}]

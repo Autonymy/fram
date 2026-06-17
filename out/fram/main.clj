@@ -67,7 +67,7 @@
   (let [f (fold/fold (fram.rt/read-log log))
    claims (:claims f)
    te (str "@" id)
-   rv (if (or (= pred "depends_on") (= pred "part_of") (= pred "relates_to")) (str "@" value) value)
+   rv (tl/ref-value claims pred value)
    cand (k/apply-assert claims (k/->Claim te pred rv))
    viol (k/violations cand te)]
   (if (not (empty? viol)) (println (str "REJECTED — " (str/join "; " viol))) (do
@@ -97,9 +97,10 @@
   (let [resp (tell-once port op te pred rv)]
   (if (and (= resp "conflict") (> tries 0)) (tell-retry port op te pred rv (- tries 1)) resp)))
 
-(defn cmd-tell [^String op ^String id ^String pred ^String value]
-  (let [te (str "@" id)
-   rv (if (or (= pred "depends_on") (= pred "part_of") (= pred "relates_to")) (str "@" value) value)
+(defn cmd-tell [^String log ^String op ^String id ^String pred ^String value]
+  (let [claims (:claims (fold/fold (fram.rt/read-log log)))
+   te (str "@" id)
+   rv (tl/ref-value claims pred value)
    resp (tell-retry (fram.rt/coord-port) op te pred rv 5)]
   (cond
   (= resp "nodaemon") (println (str "no coordinator on 127.0.0.1:" (fram.rt/coord-port) " — start it with bin/fram-up, or use `set` (single-writer)"))
@@ -165,8 +166,8 @@
   (= cmd "call") (if (>= (count args) 3) (cmd-call log (nth args 1) (nth args 2)) (println "usage: call <tool> '<edn-args>'   (run `tools` for the catalog)"))
   (= cmd "set") (if (>= (count args) 4) (cmd-set log (nth args 1) (nth args 2) (nth args 3)) (println "usage: set <id> <pred> <value>"))
   (= cmd "merge") (if (>= (count args) 3) (cmd-merge log (nth args 1) (nth args 2)) (println "usage: merge <from-entity> <to-entity>"))
-  (= cmd "tell") (if (>= (count args) 4) (cmd-tell "assert" (nth args 1) (nth args 2) (nth args 3)) (println "usage: tell <id> <pred> <value>"))
-  (= cmd "untell") (if (>= (count args) 4) (cmd-tell "retract" (nth args 1) (nth args 2) (nth args 3)) (println "usage: untell <id> <pred> <value>"))
+  (= cmd "tell") (if (>= (count args) 4) (cmd-tell log "assert" (nth args 1) (nth args 2) (nth args 3)) (println "usage: tell <id> <pred> <value>"))
+  (= cmd "untell") (if (>= (count args) 4) (cmd-tell log "retract" (nth args 1) (nth args 2) (nth args 3)) (println "usage: untell <id> <pred> <value>"))
   :else (println "fram (engine) usage: import | export <out-dir> | show <id> | history <id> | validate | watch | set <id> <pred> <value> | tell <id> <pred> <value> | untell <id> <pred> <value> | merge <from> <to> | tools | query <edn> | call <tool> <edn>"))))
 
 (defn -main [& args]

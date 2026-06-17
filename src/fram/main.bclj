@@ -116,7 +116,7 @@
   (let [f (fold/fold (fram.rt/read-log log))
         claims (:claims f)
         te (str "@" id)
-        rv (if (or (= pred "depends_on") (= pred "part_of") (= pred "relates_to")) (str "@" value) value)
+        rv (tl/ref-value claims pred value)
         cand (k/apply-assert claims (k/->Claim te pred rv))
         viol (k/violations cand te)]
     (if (not (empty? viol))
@@ -163,9 +163,10 @@
       (tell-retry port op te pred rv (- tries 1))
       resp)))
 
-(defn cmd-tell [op :- String id :- String pred :- String value :- String] :- Nil
-  (let [te (str "@" id)
-        rv (if (or (= pred "depends_on") (= pred "part_of") (= pred "relates_to")) (str "@" value) value)
+(defn cmd-tell [log :- String op :- String id :- String pred :- String value :- String] :- Nil
+  (let [claims (:claims (fold/fold (fram.rt/read-log log)))
+        te (str "@" id)
+        rv (tl/ref-value claims pred value)
         resp (tell-retry (fram.rt/coord-port) op te pred rv 5)]
     (cond
       [(= resp "nodaemon")
@@ -271,11 +272,11 @@
          (println "usage: merge <from-entity> <to-entity>"))]
       [(= cmd "tell")
        (if (>= (count args) 4)
-         (cmd-tell "assert" (nth args 1) (nth args 2) (nth args 3))
+         (cmd-tell log "assert" (nth args 1) (nth args 2) (nth args 3))
          (println "usage: tell <id> <pred> <value>"))]
       [(= cmd "untell")
        (if (>= (count args) 4)
-         (cmd-tell "retract" (nth args 1) (nth args 2) (nth args 3))
+         (cmd-tell log "retract" (nth args 1) (nth args 2) (nth args 3))
          (println "usage: untell <id> <pred> <value>"))]
       [:else (println "fram (engine) usage: import | export <out-dir> | show <id> | history <id> | validate | watch | set <id> <pred> <value> | tell <id> <pred> <value> | untell <id> <pred> <value> | merge <from> <to> | tools | query <edn> | call <tool> <edn>")])))
 
