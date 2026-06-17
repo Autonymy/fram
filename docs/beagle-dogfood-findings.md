@@ -20,6 +20,19 @@ Two passes:
 So: Beagle's coverage is strong for *leaf* types and records, and the bail-to-`Any` reflex is
 usually laziness — but typing a real interpreter end-to-end hits genuine, recordable limits.
 
+## Status (2026-06-17) — the loop is closing
+
+These gaps don't just sit in a doc; they're being fixed in the Beagle compiler itself:
+- **G5 (enforce `defenum`) — SHIPPED** (beagle `74d3eab`). A non-member keyword is now a
+  type error at constructor fields, defn args, and `=`/`not=`. Full suite green; fram
+  recompiles clean. (Imported-enum + bare-return enforcement = noted follow-ups.)
+- **G1 (`defalias`) — SHIPPED** (beagle `d9bb91e`). `(defalias Name <type>)` resolves at
+  `parse-type`; purely additive (a meta-form, zero emit/checker change). File-local v1;
+  cross-module export is a v2 follow-up.
+- **G4 SLICE-1 (map-pattern narrowing in `match`) — IN FLIGHT**, behind an adversarial
+  soundness review. Full row-polymorphism (the deep half) stays deferred (multi-week).
+- G2 / G3 / G6 / G7 — queued (Lodestar epic `2026-06-17-190614`).
+
 ## Genuine Beagle gaps (prioritized — these feed the language)
 
 | # | Gap | Impact in Fram | Suggested direction |
