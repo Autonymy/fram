@@ -220,8 +220,13 @@
           (let [req (parse-req line)]
             (if (= (:op req) :subscribe)
               (do (swap! subscribers conj w)
+                  ;; A subscriber is long-lived: it RECEIVES pushed events and sends
+                  ;; nothing, so the request-path read timeout (5s) must NOT apply or
+                  ;; it would drop every idle subscriber. Disable it for this socket;
+                  ;; the loop now blocks on read purely to detect disconnect (EOF).
+                  ;; The 1 MiB line cap still guards against a flooding subscriber.
+                  (.setSoTimeout s 0)
                   (.write w (pr-str {:subscribed (current-seq @co)})) (.newLine w) (.flush w)
-                  ;; keep the subscriber socket open; bounded reads guard idle drift
                   (loop [] (when (read-line-bounded r max-line-bytes) (recur))))
               (let [resp (handle req)] (try-reply w resp)))))
         ;; StackOverflowError is an Error (not Exception); catching Throwable here
