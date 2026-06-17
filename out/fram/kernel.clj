@@ -4,6 +4,12 @@
 (def single-valued (let [env (System/getenv "FRAM_SINGLE_VALUED")]
   (if (and (some? env) (not (= env ""))) (vec (str/split env #"\s+")) ["title" "owner" "lead" "driver" "source" "part_of" "do_on" "valid_until" "estimate_hours" "created_at" "updated_at" "name" "body" "created_by" "committed" "outcome" "abandoned" "superseded_by" "merged_into" "session_of" "start_time" "end_time" "clockify_id"])))
 
+(def terminal-preds (let [env (System/getenv "FRAM_TERMINAL_PREDS")]
+  (if (and (some? env) (not (= env ""))) (vec (str/split env #"\s+")) ["outcome" "abandoned"])))
+
+(def withdrawn-preds (let [env (System/getenv "FRAM_WITHDRAWN_PREDS")]
+  (if (and (some? env) (not (= env ""))) (vec (str/split env #"\s+")) ["abandoned"])))
+
 (defn ^Boolean vec-contains? [xs ^String s]
   (loop [r xs]
   (if (empty? r) false (if (= (first r) s) true (recur (rest r))))))
@@ -35,8 +41,12 @@
 (defn many [claims ^String l ^String p]
   (mapv (fn [c] (:r c)) (q-lp claims l p)))
 
+(defn- ^Boolean any-of? [claims ^String te preds]
+  (loop [ps preds]
+  (if (empty? ps) false (if (some? (one claims te (first ps))) true (recur (rest ps))))))
+
 (defn ^Boolean terminal? [claims ^String te]
-  (or (some? (one claims te "outcome")) (some? (one claims te "abandoned"))))
+  (any-of? claims te terminal-preds))
 
 (defn- uniq [xs]
   (reduce (fn [acc x] (if (vec-contains? acc x) acc (conj acc x))) [] xs))
@@ -71,7 +81,7 @@
 (defn violations [claims ^String te]
   (let [ids (thread-ids claims)
    v2 (reduce (fn [acc d] (let [a (if (not (vec-contains? ids d)) (conj acc (str "depends_on references missing entity " d)) acc)]
-  (if (and (not (terminal? claims te)) (some? (one claims d "abandoned"))) (conj a (str "depends_on points at abandoned " d)) a))) [] (many claims te "depends_on"))
+  (if (and (not (terminal? claims te)) (any-of? claims d withdrawn-preds)) (conj a (str "depends_on points at abandoned " d)) a))) [] (many claims te "depends_on"))
    pa (one claims te "part_of")
    v3 (if (and (some? pa) (not (vec-contains? ids pa))) (conj v2 (str "part_of references missing entity " pa)) v2)
    v5 (if (cycle? claims "depends_on" te) (conj v3 "depends_on cycle") v3)
@@ -112,8 +122,12 @@
 (defn work-thread-ids-i [^Index idx]
   (filterv (fn [s] (not (anchor-i? idx s))) (thread-ids-i idx)))
 
+(defn- ^Boolean any-of-i? [^Index idx ^String te preds]
+  (loop [ps preds]
+  (if (empty? ps) false (if (some? (one-i idx te (first ps))) true (recur (rest ps))))))
+
 (defn ^Boolean terminal-i? [^Index idx ^String te]
-  (or (some? (one-i idx te "outcome")) (some? (one-i idx te "abandoned"))))
+  (any-of-i? idx te terminal-preds))
 
 (defn dependents-i [^Index idx ^String te]
   (get (:revdep idx) te []))
@@ -132,7 +146,7 @@
 (defn violations-i [^Index idx ^String te]
   (let [term? (terminal-i? idx te)
    v2 (reduce (fn [acc d] (let [a (if (nil? (one-i idx d "title")) (conj acc (str "depends_on references missing entity " d)) acc)]
-  (if (and (not term?) (some? (one-i idx d "abandoned"))) (conj a (str "depends_on points at abandoned " d)) a))) [] (many-i idx te "depends_on"))
+  (if (and (not term?) (any-of-i? idx d withdrawn-preds)) (conj a (str "depends_on points at abandoned " d)) a))) [] (many-i idx te "depends_on"))
    pa (one-i idx te "part_of")
    v3 (if (and (some? pa) (nil? (one-i idx pa "title"))) (conj v2 (str "part_of references missing entity " pa)) v2)
    v5 (if (cycle-i? idx "depends_on" te) (conj v3 "depends_on cycle") v3)

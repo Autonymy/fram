@@ -24,6 +24,24 @@
        "created_by" "committed" "outcome" "abandoned" "superseded_by" "merged_into"
        "session_of" "start_time" "end_time" "clockify_id"])))
 
+;; Injected LIFECYCLE vocab (mirrors single-valued — the consumer declares it):
+;; "terminal" = resolved (done/canceled); "withdrawn" = a depends_on target that's
+;; suspect to depend on. The kernel keeps the derivation MACHINERY but takes the
+;; predicate NAMES as config, so it carries no baked-in lifecycle vocab a consumer
+;; can't redefine. Defaults are byte-identical to pin 727feb5 (so the in-process
+;; Lodestar seam is unaffected); a consumer overrides via the env vars.
+(def terminal-preds :- (Vec String)
+  (let [env :- Any (System/getenv "FRAM_TERMINAL_PREDS")]
+    (if (and (some? env) (not (= env "")))
+      (vec (str/split env #"\s+"))
+      ["outcome" "abandoned"])))
+
+(def withdrawn-preds :- (Vec String)
+  (let [env :- Any (System/getenv "FRAM_WITHDRAWN_PREDS")]
+    (if (and (some? env) (not (= env "")))
+      (vec (str/split env #"\s+"))
+      ["abandoned"])))
+
 (defn vec-contains? [xs :- (Vec String) s :- String] :- Bool
   (loop [r xs]
     (if (empty? r)
@@ -60,9 +78,14 @@
 (defn many [claims :- (Vec Claim) l :- String p :- String] :- (Vec String)
   (mapv (fn [c :- Claim] :- String (:r c)) (q-lp claims l p)))
 
-;; terminal = resolved: it has an outcome (done) or was abandoned (canceled).
+;; terminal = resolved: any of the injected terminal-preds (default outcome/abandoned).
+(defn- any-of? [claims :- (Vec Claim) te :- String preds :- (Vec String)] :- Bool
+  (loop [ps preds]
+    (if (empty? ps) false
+      (if (some? (one claims te (first ps))) true (recur (rest ps))))))
+
 (defn terminal? [claims :- (Vec Claim) te :- String] :- Bool
-  (or (some? (one claims te "outcome")) (some? (one claims te "abandoned"))))
+  (any-of? claims te terminal-preds))
 
 (defn- uniq [xs :- (Vec String)] :- (Vec String)
   (reduce (fn [acc :- (Vec String) x :- String] :- (Vec String)
@@ -121,7 +144,7 @@
                         (conj acc (str "depends_on references missing entity " d))
                         acc)]
                 (if (and (not (terminal? claims te))
-                         (some? (one claims d "abandoned")))
+                         (any-of? claims d withdrawn-preds))
                   (conj a (str "depends_on points at abandoned " d))
                   a)))
             []
@@ -195,8 +218,13 @@
 (defn work-thread-ids-i [idx :- Index] :- (Vec String)
   (filterv (fn [s :- String] :- Bool (not (anchor-i? idx s))) (thread-ids-i idx)))
 
+(defn- any-of-i? [idx :- Index te :- String preds :- (Vec String)] :- Bool
+  (loop [ps preds]
+    (if (empty? ps) false
+      (if (some? (one-i idx te (first ps))) true (recur (rest ps))))))
+
 (defn terminal-i? [idx :- Index te :- String] :- Bool
-  (or (some? (one-i idx te "outcome")) (some? (one-i idx te "abandoned"))))
+  (any-of-i? idx te terminal-preds))
 
 (defn dependents-i [idx :- Index te :- String] :- (Vec String)
   (get (:revdep idx) te []))
@@ -226,7 +254,7 @@
               (let [a (if (nil? (one-i idx d "title"))
                         (conj acc (str "depends_on references missing entity " d))
                         acc)]
-                (if (and (not term?) (some? (one-i idx d "abandoned")))
+                (if (and (not term?) (any-of-i? idx d withdrawn-preds))
                   (conj a (str "depends_on points at abandoned " d))
                   a)))
             []
