@@ -19,29 +19,36 @@
 ;;     p == the registered supersedes-pred marks its r (the old claim) not-live.
 ;;   - provenance = tx entities (seq, agent) + claims; never denormalized fields.
 ;;
-;; Ids are opaque (minted as Int, but flow through claim maps as Any) — query/
-;; mutate ops take id params as Any so the dynamic store + the schema/derivation
-;; layers above never fight the type system. Minters still return Int.
+;; Ids are minted as Int and the typed store carries them as Int (claim l/p/r,
+;; the indexes, tx-of). A claim VALUE is a (Map Keyword Any) {:l :p :r} (open map,
+;; NOT a record) so it stays = to the map literal assemble-dump (.clj) feeds via
+;; load-store! and cnf_test asserts against. The store handle is a bare `Atom` —
+;; Beagle has no parametric (Atom T), so deref erases the element type; we recover
+;; the Store record shape with (let [s :- t/Store (deref ctx)] …) at each read site.
+;; The value interner is type-general (v :- Any) — the engine accepts arbitrary EDN.
 ;; ============================================================================
 (ns fram.cnf)
 (define-mode strict)
+(require fram.types :as t)
 
-(defn new-store [] :- Any
-  (atom {:next-id 0 :next-seq 0 :supersedes-pred nil
-         :objects {} :values {} :val-intern {} :claims {} :tx-of {} :txs {}
-         :superseded {} :idx-by-l {} :idx-by-p {} :idx-by-r {} :idx-by-lp {} :idx-by-pr {}}))
+(defn new-store [] :- Atom
+  (atom (t/->Store 0 0 nil
+                   {} {} {} {} {} {}
+                   {} {} {} {} {} {})))
 
 ;; --- id minting (atomic via swap!'s return value) ---------------------------
-(defn fresh-id! [ctx :- Any] :- Int (:next-id (swap! ctx update :next-id inc)))
+(defn fresh-id! [ctx :- Atom] :- Int (:next-id (swap! ctx update :next-id inc)))
 
-(defn entity! [ctx :- Any] :- Int
+(defn entity! [ctx :- Atom] :- Int
   (let [id (fresh-id! ctx)]
     (swap! ctx update :objects assoc id true)
     id))
 
 ;; intern ANY literal -> a canonical Object id (equal literals share one id).
-(defn value! [ctx :- Any v :- Any] :- Int
-  (let [vi (:val-intern (deref ctx))]
+;; v stays Any: this is the type-general interner — the engine is sworn to accept
+;; arbitrary EDN, so a closed union here would be both incomplete and self-defeating.
+(defn value! [ctx :- Atom v :- Any] :- Int
+  (let [vi :- (Map Any Int) (let [s :- t/Store (deref ctx)] (:val-intern s))]
     (if (contains? vi v)
       (get vi v)
       (let [id (fresh-id! ctx)]
@@ -50,68 +57,89 @@
         (swap! ctx update :val-intern assoc v id)
         id))))
 
-(defn value-object? [ctx :- Any id :- Any] :- Bool (contains? (:values (deref ctx)) id))
-(defn literal [ctx :- Any id :- Any] :- Any (get (:values (deref ctx)) id))
-(defn value-id [ctx :- Any v :- Any] :- Any (get (:val-intern (deref ctx)) v))
+(defn value-object? [ctx :- Atom id :- Int] :- Bool
+  (let [s :- t/Store (deref ctx)] (contains? (:values s) id)))
+;; literal is the inverse of value! — returns the interned EDN literal (Any).
+(defn literal [ctx :- Atom id :- Int] :- Any
+  (let [s :- t/Store (deref ctx)] (get (:values s) id)))
+(defn value-id [ctx :- Atom v :- Any] :- Int?
+  (let [s :- t/Store (deref ctx)] (get (:val-intern s) v)))
 
 ;; --- transactions: drawn from the SAME id space, but NOT registered as objects
-(defn begin-tx! [ctx :- Any agent :- Any] :- Int
+;; agent stays Any: a domain-agnostic actor token (the engine names no actor type).
+;; A tx value is a (Map Keyword Any) (NOT a record) — assemble-dump (.clj) feeds the
+;; same shape via load-store!, so the map is the honest cross-producer wire type.
+(defn begin-tx! [ctx :- Atom agent :- Any] :- Int
   (let [tx (fresh-id! ctx)
         seq (:next-seq (swap! ctx update :next-seq inc))]
     (swap! ctx update :txs assoc tx {:seq seq :agent agent})
     tx))
 
-(defn tx-seq [ctx :- Any tx :- Any] :- Any
-  (let [m (get (:txs (deref ctx)) tx)] (if (some? m) (:seq m) 0)))
+(defn tx-seq [ctx :- Atom tx :- Int] :- Int
+  (let [s :- t/Store (deref ctx) m :- (U (Map Keyword Any) Nil) (get (:txs s) tx)]
+    (if (some? m) (:seq m) 0)))
 
 ;; --- supersession is data-driven: register the predicate that triggers it ----
-(defn set-supersedes-pred! [ctx :- Any pid :- Any] :- Any
+(defn set-supersedes-pred! [ctx :- Atom pid :- Int] :- Any
   (swap! ctx assoc :supersedes-pred pid))
 
 ;; --- claims (reified: each has its own Object id) ---------------------------
-(defn- index-claim! [ctx :- Any cid :- Any l :- Any p :- Any r :- Any] :- Any
-  (swap! ctx update :idx-by-l update l (fn [o :- Any] :- Any (conj (or o []) cid)))
-  (swap! ctx update :idx-by-p update p (fn [o :- Any] :- Any (conj (or o []) cid)))
-  (swap! ctx update :idx-by-r update r (fn [o :- Any] :- Any (conj (or o []) cid)))
-  (swap! ctx update :idx-by-lp update [l p] (fn [o :- Any] :- Any (conj (or o []) cid)))
-  (swap! ctx update :idx-by-pr update [p r] (fn [o :- Any] :- Any (conj (or o []) cid))))
+(defn- index-claim! [ctx :- Atom cid :- Int l :- Int p :- Int r :- Int] :- Any
+  (swap! ctx update :idx-by-l update l (fn [o :- (Vec Int)] :- (Vec Int) (conj (or o []) cid)))
+  (swap! ctx update :idx-by-p update p (fn [o :- (Vec Int)] :- (Vec Int) (conj (or o []) cid)))
+  (swap! ctx update :idx-by-r update r (fn [o :- (Vec Int)] :- (Vec Int) (conj (or o []) cid)))
+  (swap! ctx update :idx-by-lp update [l p] (fn [o :- (Vec Int)] :- (Vec Int) (conj (or o []) cid)))
+  (swap! ctx update :idx-by-pr update [p r] (fn [o :- (Vec Int)] :- (Vec Int) (conj (or o []) cid))))
 
 ;; Assert a claim. If p is the registered supersedes-pred, this claim marks its r
 ;; (the old claim) not-live — so supersession is just a claim-about-a-claim.
-(defn claim! [ctx :- Any l :- Any p :- Any r :- Any tx :- Any] :- Int
+;; A claim value is a (Map Keyword Any) {:l :p :r} (NOT a record): l/p/r are Int
+;; ids, but the value stays an open keyword-map so it is = to the map literal that
+;; assemble-dump (.clj) feeds via load-store! and that cnf_test asserts against.
+(defn claim! [ctx :- Atom l :- Int p :- Int r :- Int tx :- Int] :- Int
   (let [cid (fresh-id! ctx)]
     (swap! ctx update :objects assoc cid true)
     (swap! ctx update :claims assoc cid {:l l :p p :r r})
     (swap! ctx update :tx-of assoc cid tx)
     (index-claim! ctx cid l p r)
-    (when (= p (:supersedes-pred (deref ctx)))
+    (when (= p (let [s :- t/Store (deref ctx)] (:supersedes-pred s)))
       (swap! ctx update :superseded assoc r true))
     cid))
 
-(defn claim-of [ctx :- Any cid :- Any] :- Any (get (:claims (deref ctx)) cid))
-(defn claim-tx [ctx :- Any cid :- Any] :- Any (get (:tx-of (deref ctx)) cid))
+(defn claim-of [ctx :- Atom cid :- Int] :- (U (Map Keyword Any) Nil)
+  (let [s :- t/Store (deref ctx)] (get (:claims s) cid)))
+(defn claim-tx [ctx :- Atom cid :- Int] :- Int?
+  (let [s :- t/Store (deref ctx)] (get (:tx-of s) cid)))
 
 ;; --- queries over the LIVE view (claims − superseded) -----------------------
-(defn live? [ctx :- Any cid :- Any] :- Bool
-  (not (contains? (:superseded (deref ctx)) cid)))
+(defn live? [ctx :- Atom cid :- Int] :- Bool
+  (let [s :- t/Store (deref ctx)] (not (contains? (:superseded s) cid))))
 
-(defn- live-only [ctx :- Any cids :- Any] :- Any
-  (filterv (fn [c :- Any] :- Bool (live? ctx c)) cids))
+(defn- live-only [ctx :- Atom cids :- (Vec Int)] :- (Vec Int)
+  (filterv (fn [c :- Int] :- Bool (live? ctx c)) cids))
 
-(defn by-l [ctx :- Any l :- Any] :- Any (live-only ctx (get (:idx-by-l (deref ctx)) l [])))
-(defn by-p [ctx :- Any p :- Any] :- Any (live-only ctx (get (:idx-by-p (deref ctx)) p [])))
-(defn by-r [ctx :- Any r :- Any] :- Any (live-only ctx (get (:idx-by-r (deref ctx)) r [])))
-(defn by-lp [ctx :- Any l :- Any p :- Any] :- Any (live-only ctx (get (:idx-by-lp (deref ctx)) [l p] [])))
-(defn by-pr [ctx :- Any p :- Any r :- Any] :- Any (live-only ctx (get (:idx-by-pr (deref ctx)) [p r] [])))
+(defn by-l [ctx :- Atom l :- Int] :- (Vec Int)
+  (live-only ctx (let [s :- t/Store (deref ctx)] (get (:idx-by-l s) l []))))
+(defn by-p [ctx :- Atom p :- Int] :- (Vec Int)
+  (live-only ctx (let [s :- t/Store (deref ctx)] (get (:idx-by-p s) p []))))
+(defn by-r [ctx :- Atom r :- Int] :- (Vec Int)
+  (live-only ctx (let [s :- t/Store (deref ctx)] (get (:idx-by-r s) r []))))
+(defn by-lp [ctx :- Atom l :- Int p :- Int] :- (Vec Int)
+  (live-only ctx (let [s :- t/Store (deref ctx)] (get (:idx-by-lp s) [l p] []))))
+(defn by-pr [ctx :- Atom p :- Int r :- Int] :- (Vec Int)
+  (live-only ctx (let [s :- t/Store (deref ctx)] (get (:idx-by-pr s) [p r] []))))
 
-(defn current-claims [ctx :- Any] :- Any
-  (live-only ctx (vec (keys (:claims (deref ctx))))))
+(defn current-claims [ctx :- Atom] :- (Vec Int)
+  (live-only ctx (let [s :- t/Store (deref ctx)] (vec (keys (:claims s))))))
 
 ;; --- durable serialization --------------------------------------------------
 ;; dump-store is pure (snapshot -> EDN-serializable value); load-store! rebuilds a
 ;; ctx from one (the derived val-intern + 5 indexes are reconstructed, not stored).
-(defn dump-store [ctx :- Any] :- Any
-  (let [s (deref ctx)]
+;; GAP: the serialization boundary projects records to (vec a-map) — vectors of
+;; heterogeneous [key value] pairs (a Tuple — Beagle has no HVec). dump's return and
+;; load's `data` stay Any (no record gives fidelity over Any here).
+(defn dump-store [ctx :- Atom] :- Any
+  (let [s :- t/Store (deref ctx)]
     {:next-id (:next-id s) :next-seq (:next-seq s) :supersedes-pred (:supersedes-pred s)
      :objects (vec (keys (:objects s)))
      :values (vec (:values s))
@@ -120,18 +148,20 @@
      :txs (vec (:txs s))
      :superseded (vec (keys (:superseded s)))}))
 
-(defn load-store! [ctx :- Any data :- Any] :- Any
-  (swap! ctx (fn [old :- Any] :- Any
-               {:next-id (:next-id data) :next-seq (:next-seq data) :supersedes-pred (:supersedes-pred data)
-                :objects {} :values {} :val-intern {} :claims {} :tx-of {} :txs {} :superseded {}
-                :idx-by-l {} :idx-by-p {} :idx-by-r {} :idx-by-lp {} :idx-by-pr {}}))
+(defn load-store! [ctx :- Atom data :- Any] :- Atom
+  (swap! ctx (fn [old :- t/Store] :- t/Store
+               (t/->Store (:next-id data) (:next-seq data) (:supersedes-pred data)
+                          {} {} {} {} {} {}
+                          {} {} {} {} {} {})))
   (doseq [id (:objects data)] (swap! ctx update :objects assoc id true))
+  ;; GAP: the dump entries are (vec a-map) -> heterogeneous [key value] Tuples;
+  ;; Beagle has no HVec, so each entry `e` reads as Any here (serialization boundary).
   (doseq [e (:values data)]
-    (let [id (first e) v (nth e 1)]
+    (let [id (first e) v :- Any (nth e 1)]
       (swap! ctx update :values assoc id v)
       (swap! ctx update :val-intern assoc v id)))
   (doseq [e (:claims data)]
-    (let [cid (first e) m (nth e 1)]
+    (let [cid (first e) m :- (Map Keyword Any) (nth e 1)]
       (swap! ctx update :claims assoc cid m)
       (index-claim! ctx cid (:l m) (:p m) (:r m))))
   (doseq [e (:tx-of data)] (swap! ctx update :tx-of assoc (first e) (nth e 1)))

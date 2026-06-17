@@ -13,7 +13,17 @@
   store, no name->id, no new dependency. The reserve surface for ad-hoc recursion;
   point/neighbor lookups are tools (fram.tools). Caveat: evaluation is naive (no
   semi-naive); a deeply recursive query can be expensive — the MCP path bounds it
-  with a time budget; the CLI runs it unbounded.")
+  with a time budget; the CLI runs it unbounded.
+
+  TYPES: this projection is provably all-String — l/p/r are the fold's strings and
+  cid is (str \"c\" i) — so the query-side Db is the STRICTER (Map String (Set (Vec
+  String))), a precise refinement of datalog's domain-agnostic (Vec Any) Db. The
+  d/fixpoint seam returns datalog's Any-element Db; an Any value is assignable into
+  the precise String accumulator (verified). The query `q` stays Any: it's an open
+  keyword-map whose :strata-xor-:rules discrimination relies on key-presence, which
+  a record (all keys always present) would break — the open-map gap. The run result
+  is a tagged heterogeneous envelope ({:ok ...} | {:error ...}) — also an open-map,
+  so the return stays Any.")
 
 (require fram.kernel :as k)
 (require fram.datalog :as d)
@@ -22,8 +32,8 @@
 ;; --- EDB: project the current claim fold into triple/claim tuple-sets --------
 ;; Strings throughout — the flat fold's l/p/r are already strings, so a caller's
 ;; constant predicate/entity names match with no resolution step.
-(defn claims->edb [claims :- (Vec k/Claim)] :- Any
-  (loop [cs claims i 0 triple #{} claim #{}]
+(defn claims->edb [claims :- (Vec k/Claim)] :- (Map String (Set (Vec String)))
+  (loop [cs claims i 0 triple :- (Set (Vec String)) #{} claim :- (Set (Vec String)) #{}]
     (if (empty? cs)
       {"triple" triple "claim" claim}
       (let [c (first cs)]
@@ -33,46 +43,49 @@
 
 ;; --- the boundary: validation -----------------------------------------------
 ;; a term is {:var <string>} (a logic variable) or a scalar constant.
+;; GAP: term is polymorphic (open-map var OR bare constant), so t stays Any.
 (defn- term-ok? [t :- Any] :- Bool
   (if (map? t)
     (and (contains? t :var) (string? (:var t)))
     (or (string? t) (number? t))))
 
-(defn- vars-of [args :- Any] :- Any
-  (reduce (fn [acc :- Any t :- Any] :- Any
+(defn- vars-of [args :- (Vec Any)] :- (Set String)
+  (reduce (fn [acc :- (Set String) t :- Any] :- (Set String)
             (if (and (map? t) (contains? t :var)) (conj acc (:var t)) acc))
           #{} args))
 
 ;; union of the vars bound by the POSITIVE literals of a body
-(defn- positive-body-vars [body :- Any] :- Any
-  (reduce (fn [acc :- Any litt :- Any] :- Any
+(defn- positive-body-vars [body :- (Vec Any)] :- (Set String)
+  (reduce (fn [acc :- (Set String) litt :- Any] :- (Set String)
             (if (and (map? litt) (not (:neg litt)) (vector? (:args litt)))
-              (reduce (fn [a :- Any v :- Any] :- Any (conj a v)) acc (vec (vars-of (:args litt))))
+              (reduce (fn [a :- (Set String) v :- String] :- (Set String) (conj a v)) acc (vec (vars-of (:args litt))))
               acc))
           #{} body))
 
-(defn- all-vectors? [xs :- Any] :- Bool
+(defn- all-vectors? [xs :- (Vec Any)] :- Bool
   (loop [ys xs]
     (if (empty? ys) true (if (vector? (first ys)) (recur (rest ys)) false))))
 
-(defn- all-rules [q :- Any] :- Any
+;; q stays Any: open-map key-presence (:strata xor :rules) drives the branch.
+(defn- all-rules [q :- Any] :- (Vec Any)
   (if (contains? q :strata)
-    (reduce (fn [acc :- Any s :- Any] :- Any (vec (concat acc s))) [] (:strata q))
+    (reduce (fn [acc :- (Vec Any) s :- Any] :- (Vec Any) (vec (concat acc s))) [] (:strata q))
     (let [rs (:rules q)] (if (some? rs) rs []))))
 
-(defn- strata-of [q :- Any] :- Any
+(defn- strata-of [q :- Any] :- (Vec (Vec Any))
   (if (contains? q :strata)
     (:strata q)
     (let [rs (:rules q)] [(if (some? rs) rs [])])))
 
-(defn- head-rels [rules :- Any] :- Any
-  (reduce (fn [acc :- Any r :- Any] :- Any
+(defn- head-rels [rules :- (Vec Any)] :- (Set String)
+  (reduce (fn [acc :- (Set String) r :- Any] :- (Set String)
             (if (and (map? r) (map? (:head r))) (conj acc (:rel (:head r))) acc))
           #{} rules))
 
 ;; per-literal errors, given the known relations + the vars bound by earlier
 ;; positive literals in the same body (for negation range-restriction).
-(defn- lit-errors [litt :- Any known :- Any bound :- Any] :- (Vec String)
+;; litt stays Any: it's an open keyword-map validated key-by-key here.
+(defn- lit-errors [litt :- Any known :- (Set String) bound :- (Set String)] :- (Vec String)
   (if (not (map? litt))
     ["body literal must be a map {:rel r :args [...] :neg? bool}"]
     (let [rel (:rel litt) args (:args litt)
@@ -94,25 +107,26 @@
                        [] args)
                [])
           e7 (if (and (= (:neg litt) true) (vector? args))
-               (reduce (fn [acc :- (Vec String) v :- Any] :- (Vec String)
+               (reduce (fn [acc :- (Vec String) v :- String] :- (Vec String)
                          (if (contains? bound v) acc
                            (conj acc (str "negated var '" (str v) "' must be bound by an earlier positive literal"))))
                        [] (vec (vars-of args)))
                [])]
       (vec (concat e1 (concat e2 (concat e3 (concat e4 (concat e5 (concat en (concat e6 e7)))))))))))
 
-(defn- body-errors [body :- Any known :- Any] :- (Vec String)
-  (loop [ls body bound #{} errs []]
+(defn- body-errors [body :- (Vec Any) known :- (Set String)] :- (Vec String)
+  (loop [ls body bound :- (Set String) #{} errs :- (Vec String) []]
     (if (empty? ls)
       errs
       (let [litt (first ls)
             le (lit-errors litt known bound)
             bound2 (if (and (map? litt) (not (:neg litt)) (vector? (:args litt)))
-                     (reduce (fn [acc :- Any v :- Any] :- Any (conj acc v)) bound (vec (vars-of (:args litt))))
+                     (reduce (fn [acc :- (Set String) v :- String] :- (Set String) (conj acc v)) bound (vec (vars-of (:args litt))))
                      bound)]
         (recur (rest ls) bound2 (vec (concat errs le)))))))
 
-(defn- rule-errors [r :- Any known :- Any] :- (Vec String)
+;; r stays Any: an open keyword-map rule, validated key-by-key here.
+(defn- rule-errors [r :- Any known :- (Set String)] :- (Vec String)
   (if (not (map? r))
     ["rule must be a map {:head {...} :body [...]}"]
     (let [head (:head r) body (:body r)
@@ -132,7 +146,7 @@
           ;; range restriction: every head var must be bound by a positive body literal
           ehsafe (if (and head-ok (vector? body))
                    (let [bound (positive-body-vars body)]
-                     (reduce (fn [acc :- (Vec String) v :- Any] :- (Vec String)
+                     (reduce (fn [acc :- (Vec String) v :- String] :- (Vec String)
                                (if (contains? bound v) acc
                                  (conj acc (str "head var '" (str v) "' is not bound by a positive body literal"))))
                              [] (vec (vars-of (:args head)))))
@@ -142,6 +156,8 @@
 ;; Returns [] when the query is well-formed and SAFE to run, else a vec of
 ;; human+model-readable error strings. THIS is the "can't emit broken" boundary;
 ;; it is total — it never throws on malformed input, it reports.
+;; q stays Any: the open-map :strata-xor-:rules discrimination needs key-presence,
+;; which a record (all keys always present) would defeat — the open-map gap.
 (defn validate [q :- Any] :- (Vec String)
   (if (not (map? q))
     ["query must be a map: {:find <rel> :rules [<rule>...]} (or :strata [[...]...])"]
@@ -166,11 +182,16 @@
           (vec (concat ef (concat er (concat erules esv)))))))))
 
 ;; run the validated query over the claim fold; {:ok [tuple...]} or {:error [msg...]}.
+;; q + return stay Any: q is the open-map query (above); the result is a tagged
+;; heterogeneous envelope ({:ok ...} | {:error ...}) discriminated by key-presence.
 (defn run [claims :- (Vec k/Claim) q :- Any] :- Any
   (let [errs (validate q)]
     (if (not (empty? errs))
       {:error errs}
       (let [edb (claims->edb claims)
             strata (strata-of q)
-            db (reduce (fn [acc :- Any stratum :- Any] :- Any (d/fixpoint acc stratum)) edb strata)]
+            ;; d/fixpoint returns datalog's (Vec Any)-element Db; that Any is
+            ;; assignable into this stricter (Vec String) accumulator (verified).
+            db :- (Map String (Set (Vec String)))
+            (reduce (fn [acc :- (Map String (Set (Vec String))) stratum :- (Vec Any)] :- (Map String (Set (Vec String))) (d/fixpoint acc stratum)) edb strata)]
         {:ok (d/facts db (:find q))}))))

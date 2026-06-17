@@ -1,16 +1,16 @@
 (ns fram.datalog
   (:require [fram.cnf :as c]))
 
-(defn v [name]
+(defn v [^String name]
   {:var name})
 
-(defn lit [rel args]
+(defn lit [^String rel args]
   {:rel rel :args args :neg false})
 
-(defn nlit [rel args]
+(defn nlit [^String rel args]
   {:rel rel :args args :neg true})
 
-(defn rule [hrel hargs body]
+(defn rule [^String hrel hargs body]
   {:head {:rel hrel :args hargs} :body body})
 
 (defn- ^Boolean var? [t]
@@ -124,5 +124,5 @@
    probs2 (vec (concat probs (mapv (fn [nl] (str "stratum " i ": negated '" (:rel nl) "' is not EDB or a lower stratum")) bad)))]
   (recur (+ i 1) (reduce (fn [acc rel] (conj acc rel)) lower this-rels) probs2)))))
 
-(defn facts [db rel]
+(defn facts [db ^String rel]
   (vec (get db rel #{})))

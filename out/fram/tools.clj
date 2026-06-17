@@ -3,6 +3,46 @@
             [fram.query :as q]
             [clojure.string :as str]))
 
+(def Op-values #{::one ::many ::revfrom ::threads ::show ::dependents ::validate ::query ::set ::add ::remove})
+
+(defrecord IdTitle [id title])
+
+(defn idtitle-id [r] (:id r))
+
+(defn idtitle-title [r] (:title r))
+
+(defrecord PredVal [pred value])
+
+(defn predval-pred [r] (:pred r))
+
+(defn predval-value [r] (:value r))
+
+(defrecord ThreadViolation [thread violation])
+
+(defn threadviolation-thread [r] (:thread r))
+
+(defn threadviolation-violation [r] (:violation r))
+
+(defrecord Param [name type required])
+
+(defn param-name [r] (:name r))
+
+(defn param-type [r] (:type r))
+
+(defn param-required [r] (:required r))
+
+(defrecord ToolSpec [name desc params op pred])
+
+(defn toolspec-name [r] (:name r))
+
+(defn toolspec-desc [r] (:desc r))
+
+(defn toolspec-params [r] (:params r))
+
+(defn toolspec-op [r] (:op r))
+
+(defn toolspec-pred [r] (:pred r))
+
 (defn- at [id]
   (if (string? id) (if (str/starts-with? id "@") id (str "@" id)) id))
 
@@ -26,11 +66,11 @@
 (defn- pred-tools [claims ^String pred]
   (let [single (k/single? pred)
    ref (ref-pred? claims pred)
-   id-param [{:name "id" :type "string" :required true}]
-   idv-param [{:name "id" :type "string" :required true} {:name "value" :type "string" :required true}]
-   reads (if single [{:name (str pred "-of") :desc (str "Get the " pred " of <id> (single-valued).") :params id-param :op :one :pred pred}] [{:name (str pred "-list") :desc (str "List the " pred " values of <id>.") :params id-param :op :many :pred pred}])
-   revs (if ref [{:name (str pred "-from") :desc (str "Entities whose " pred " points at <id> (reverse edge).") :params id-param :op :revfrom :pred pred}] [])
-   writes (if single [{:name (str "set-" pred) :desc (str "Set the " pred " of <id> to <value> (replaces; single-valued).") :params idv-param :op :set :pred pred}] [{:name (str "add-" pred) :desc (str "Add <value> to the " pred " of <id>.") :params idv-param :op :add :pred pred} {:name (str "remove-" pred) :desc (str "Remove <value> from the " pred " of <id>.") :params idv-param :op :remove :pred pred}])]
+   id-param [(->Param "id" "string" true)]
+   idv-param [(->Param "id" "string" true) (->Param "value" "string" true)]
+   reads (if single [(->ToolSpec (str pred "-of") (str "Get the " pred " of <id> (single-valued).") id-param :one pred)] [(->ToolSpec (str pred "-list") (str "List the " pred " values of <id>.") id-param :many pred)])
+   revs (if ref [(->ToolSpec (str pred "-from") (str "Entities whose " pred " points at <id> (reverse edge).") id-param :revfrom pred)] [])
+   writes (if single [(->ToolSpec (str "set-" pred) (str "Set the " pred " of <id> to <value> (replaces; single-valued).") idv-param :set pred)] [(->ToolSpec (str "add-" pred) (str "Add <value> to the " pred " of <id>.") idv-param :add pred) (->ToolSpec (str "remove-" pred) (str "Remove <value> from the " pred " of <id>.") idv-param :remove pred)])]
   (vec (concat reads (concat revs writes)))))
 
 (defn- dedupe-by-name [specs]
@@ -42,7 +82,7 @@
   (if (contains? seen nm) (recur (rest ss) seen out) (recur (rest ss) (conj seen nm) (conj out s)))))))
 
 (defn catalog [claims]
-  (let [structural [{:name "threads" :desc "List all threads (entities with a title) as {id,title}." :params [] :op :threads :pred ""} {:name "show" :desc "All claims about <id>." :params [{:name "id" :type "string" :required true}] :op :show :pred ""} {:name "dependents-of" :desc "Threads that depend_on <id> (reverse depends_on)." :params [{:name "id" :type "string" :required true}] :op :dependents :pred ""} {:name "validate" :desc "Structural integrity violations (cycles, dangling refs) across all threads." :params [] :op :validate :pred ""} {:name "query" :desc (str "Ad-hoc recursive query for multi-hop questions no named tool covers. " "Pass a structured Datalog-shaped object: " "{:find <rel> :rules [{:head {:rel R :args [terms]} :body [{:rel r :args [terms] :neg <bool>}]}]}. " "A term is {:var \"x\"} or a constant; base relations are triple(l,p,r) and claim(cid,l,p,r).") :params [{:name "query" :type "object" :required true}] :op :query :pred ""}]
+  (let [structural [(->ToolSpec "threads" "List all threads (entities with a title) as {id,title}." [] :threads "") (->ToolSpec "show" "All claims about <id>." [(->Param "id" "string" true)] :show "") (->ToolSpec "dependents-of" "Threads that depend_on <id> (reverse depends_on)." [(->Param "id" "string" true)] :dependents "") (->ToolSpec "validate" "Structural integrity violations (cycles, dangling refs) across all threads." [] :validate "") (->ToolSpec "query" (str "Ad-hoc recursive query for multi-hop questions no named tool covers. " "Pass a structured Datalog-shaped object: " "{:find <rel> :rules [{:head {:rel R :args [terms]} :body [{:rel r :args [terms] :neg <bool>}]}]}. " "A term is {:var \"x\"} or a constant; base relations are triple(l,p,r) and claim(cid,l,p,r).") [(->Param "query" "object" true)] :query "")]
    per-pred (reduce (fn [acc pred] (vec (concat acc (pred-tools claims pred)))) [] (distinct-preds claims))]
   (dedupe-by-name (vec (concat structural per-pred)))))
 
@@ -72,10 +112,10 @@
   (if (some? v) [v] []))}
   (= op :many) {:rows (k/many-i idx te pred)}
   (= op :revfrom) {:rows (reduce (fn [acc c] (if (and (= (:p c) pred) (= (:r c) te)) (conj acc (:l c)) acc)) [] claims)}
-  (= op :threads) {:rows (mapv (fn [t] {:id t :title (k/one-i idx t "title")}) (k/thread-ids-i idx))}
-  (= op :show) {:rows (mapv (fn [c] {:pred (:p c) :value (:r c)}) (k/q-by-l claims te))}
+  (= op :threads) {:rows (mapv (fn [t] (->IdTitle t (k/one-i idx t "title"))) (k/thread-ids-i idx))}
+  (= op :show) {:rows (mapv (fn [c] (->PredVal (:p c) (:r c))) (k/q-by-l claims te))}
   (= op :dependents) {:rows (k/dependents-i idx te)}
-  (= op :validate) {:rows (reduce (fn [acc t] (vec (concat acc (mapv (fn [v] {:thread t :violation v}) (k/violations-i idx t))))) [] (k/thread-ids-i idx))}
+  (= op :validate) {:rows (reduce (fn [acc t] (vec (concat acc (mapv (fn [v] (->ThreadViolation t v)) (k/violations-i idx t))))) [] (k/thread-ids-i idx))}
   (= op :query) (q/run claims (:query args))
   (= op :set) {:write {:op "assert" :l te :p pred :r rv}}
   (= op :add) {:write {:op "assert" :l te :p pred :r rv}}

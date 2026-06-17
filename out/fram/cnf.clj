@@ -1,7 +1,8 @@
-(ns fram.cnf)
+(ns fram.cnf
+  (:require [fram.types :as t]))
 
 (defn new-store []
-  (atom {:next-id 0 :next-seq 0 :supersedes-pred nil :objects {} :values {} :val-intern {} :claims {} :tx-of {} :txs {} :superseded {} :idx-by-l {} :idx-by-p {} :idx-by-r {} :idx-by-lp {} :idx-by-pr {}}))
+  (atom (t/->Store 0 0 nil {} {} {} {} {} {} {} {} {} {} {} {})))
 
 (defn fresh-id! [ctx]
   (:next-id (swap! ctx update :next-id inc)))
@@ -12,7 +13,8 @@
   id))
 
 (defn value! [ctx v]
-  (let [vi (:val-intern (deref ctx))]
+  (let [vi (let [s (deref ctx)]
+  (:val-intern s))]
   (if (contains? vi v) (get vi v) (let [id (fresh-id! ctx)]
   (swap! ctx update :objects assoc id true)
   (swap! ctx update :values assoc id v)
@@ -20,13 +22,16 @@
   id))))
 
 (defn ^Boolean value-object? [ctx id]
-  (contains? (:values (deref ctx)) id))
+  (let [s (deref ctx)]
+  (contains? (:values s) id)))
 
 (defn literal [ctx id]
-  (get (:values (deref ctx)) id))
+  (let [s (deref ctx)]
+  (get (:values s) id)))
 
 (defn value-id [ctx v]
-  (get (:val-intern (deref ctx)) v))
+  (let [s (deref ctx)]
+  (get (:val-intern s) v)))
 
 (defn begin-tx! [ctx agent]
   (let [tx (fresh-id! ctx)
@@ -35,7 +40,8 @@
   tx))
 
 (defn tx-seq [ctx tx]
-  (let [m (get (:txs (deref ctx)) tx)]
+  (let [s (deref ctx)
+   m (get (:txs s) tx)]
   (if (some? m) (:seq m) 0)))
 
 (defn set-supersedes-pred! [ctx pid]
@@ -54,46 +60,56 @@
   (swap! ctx update :claims assoc cid {:l l :p p :r r})
   (swap! ctx update :tx-of assoc cid tx)
   (index-claim! ctx cid l p r)
-  (if (= p (:supersedes-pred (deref ctx))) (do
+  (if (= p (let [s (deref ctx)]
+  (:supersedes-pred s))) (do
   (swap! ctx update :superseded assoc r true)))
   cid))
 
 (defn claim-of [ctx cid]
-  (get (:claims (deref ctx)) cid))
+  (let [s (deref ctx)]
+  (get (:claims s) cid)))
 
 (defn claim-tx [ctx cid]
-  (get (:tx-of (deref ctx)) cid))
+  (let [s (deref ctx)]
+  (get (:tx-of s) cid)))
 
 (defn ^Boolean live? [ctx cid]
-  (not (contains? (:superseded (deref ctx)) cid)))
+  (let [s (deref ctx)]
+  (not (contains? (:superseded s) cid))))
 
 (defn- live-only [ctx cids]
   (filterv (fn [c] (live? ctx c)) cids))
 
 (defn by-l [ctx l]
-  (live-only ctx (get (:idx-by-l (deref ctx)) l [])))
+  (live-only ctx (let [s (deref ctx)]
+  (get (:idx-by-l s) l []))))
 
 (defn by-p [ctx p]
-  (live-only ctx (get (:idx-by-p (deref ctx)) p [])))
+  (live-only ctx (let [s (deref ctx)]
+  (get (:idx-by-p s) p []))))
 
 (defn by-r [ctx r]
-  (live-only ctx (get (:idx-by-r (deref ctx)) r [])))
+  (live-only ctx (let [s (deref ctx)]
+  (get (:idx-by-r s) r []))))
 
 (defn by-lp [ctx l p]
-  (live-only ctx (get (:idx-by-lp (deref ctx)) [l p] [])))
+  (live-only ctx (let [s (deref ctx)]
+  (get (:idx-by-lp s) [l p] []))))
 
 (defn by-pr [ctx p r]
-  (live-only ctx (get (:idx-by-pr (deref ctx)) [p r] [])))
+  (live-only ctx (let [s (deref ctx)]
+  (get (:idx-by-pr s) [p r] []))))
 
 (defn current-claims [ctx]
-  (live-only ctx (vec (keys (:claims (deref ctx))))))
+  (live-only ctx (let [s (deref ctx)]
+  (vec (keys (:claims s))))))
 
 (defn dump-store [ctx]
   (let [s (deref ctx)]
   {:next-id (:next-id s) :next-seq (:next-seq s) :supersedes-pred (:supersedes-pred s) :objects (vec (keys (:objects s))) :values (vec (:values s)) :claims (vec (:claims s)) :tx-of (vec (:tx-of s)) :txs (vec (:txs s)) :superseded (vec (keys (:superseded s)))}))
 
 (defn load-store! [ctx data]
-  (swap! ctx (fn [old] {:next-id (:next-id data) :next-seq (:next-seq data) :supersedes-pred (:supersedes-pred data) :objects {} :values {} :val-intern {} :claims {} :tx-of {} :txs {} :superseded {} :idx-by-l {} :idx-by-p {} :idx-by-r {} :idx-by-lp {} :idx-by-pr {}}))
+  (swap! ctx (fn [old] (t/->Store (:next-id data) (:next-seq data) (:supersedes-pred data) {} {} {} {} {} {} {} {} {} {} {} {})))
   (doseq [id (:objects data)]
   (swap! ctx update :objects assoc id true))
   (doseq [e (:values data)]
