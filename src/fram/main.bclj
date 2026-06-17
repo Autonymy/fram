@@ -26,6 +26,7 @@
 (declare-extern fram.rt/coord-port [-> Int])
 (declare-extern fram.rt/coord-status [Int -> String])
 (declare-extern fram.rt/coord-watch [Int -> Nil])
+(declare-extern fram.rt/history [String String -> Nil])
 
 ;; --- display helpers --------------------------------------------------------
 
@@ -192,6 +193,10 @@
       [(= cmd "validate") (cmd-validate log)]
       [(= cmd "watch")    (cmd-watch)]
       [(= cmd "show")     (cmd-show log (if (> (count args) 1) (nth args 1) ""))]
+      [(= cmd "history")
+       (if (> (count args) 1)
+         (fram.rt/history log (nth args 1))
+         (println "usage: history <id>"))]
       [(= cmd "set")
        (if (>= (count args) 4)
          (cmd-set log (nth args 1) (nth args 2) (nth args 3))
@@ -208,7 +213,7 @@
        (if (>= (count args) 4)
          (cmd-tell "retract" (nth args 1) (nth args 2) (nth args 3))
          (println "usage: untell <id> <pred> <value>"))]
-      [:else (println "fram (engine) usage: import | export <out-dir> | show <id> | validate | watch | set <id> <pred> <value> | tell <id> <pred> <value> | untell <id> <pred> <value> | merge <from> <to>")])))
+      [:else (println "fram (engine) usage: import | export <out-dir> | show <id> | history <id> | validate | watch | set <id> <pred> <value> | tell <id> <pred> <value> | untell <id> <pred> <value> | merge <from> <to>")])))
 
 (defn -main [& args] :- Nil
   (run (vec args) (fram.rt/threads-dir) (fram.rt/log-path)))

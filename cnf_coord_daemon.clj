@@ -39,7 +39,7 @@
 (defn- append-flat! [op te p r seq]
   (when @flat-log
     (with-open [os (java.io.FileOutputStream. (str @flat-log) true)]
-      (.write os (.getBytes (str (pr-str {:tx seq :op op :l te :p p :r r :ts "t" :by "coord"}) "\n") "UTF-8"))
+      (.write os (.getBytes (str (pr-str {:tx seq :op op :l te :p p :r r :ts (fram.rt/now-ts) :by "coord"}) "\n") "UTF-8"))
       (.flush os))
     (reset! flat-mtime (stamp @flat-log))))
 

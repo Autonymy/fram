@@ -140,7 +140,12 @@
 (defn getenv-or [k fallback] (or (System/getenv k) fallback))
 
 ;; --- the assertion log ------------------------------------------------------
-;; one EDN map per line: {:tx Int :op "assert"|"retract" :l :p :r}.
+;; one EDN map per line: {:tx Int :op "assert"|"retract" :l :p :r :frame :ts}.
+;; :ts is the wall-clock commit instant — PROVENANCE ONLY, never a sort key
+;; (:tx is the sole total order; wall-clock is non-monotonic under NTP/skew).
+;; Absent on pre-cutover lines; read-log ignores it, so old logs read unchanged.
+
+(defn now-ts [] (str (java.time.Instant/now)))
 
 (defn read-log [path]
   (if (.exists (io/file path))
@@ -154,14 +159,50 @@
     []))
 
 (defn write-log [path assertions]
-  (let [lines (map (fn [a]
-                     (pr-str {:tx (:tx a) :op (:op a) :l (:l a) :p (:p a) :r (:r a) :frame (:frame a)}))
+  (let [ts (now-ts)                                  ; one batch instant (this import/rewrite)
+        lines (map (fn [a]
+                     (pr-str {:tx (:tx a) :op (:op a) :l (:l a) :p (:p a) :r (:r a) :frame (:frame a) :ts ts}))
                    assertions)]
     (spit path (str (str/join "\n" lines) "\n"))))
 
 (defn append-assertion [path a]
-  (spit path (str (pr-str {:tx (:tx a) :op (:op a) :l (:l a) :p (:p a) :r (:r a) :frame (:frame a)}) "\n")
+  (spit path (str (pr-str {:tx (:tx a) :op (:op a) :l (:l a) :p (:p a) :r (:r a) :frame (:frame a) :ts (now-ts)}) "\n")
         :append true))
+
+;; --- entity history: the time-travel read (a log scan, not a fold) ----------
+;; Every assert/retract touching one entity, in tx order, with its commit
+;; instant. The CHEAP half of time-travel — O(log lines), no re-fold — and the
+;; query people actually reach for ("how did this get to its current state?").
+;; (General "state as-of tx N" is the expensive re-fold; deferred until needed.)
+(defn history [path id]
+  (if (str/blank? id)
+    (println "usage: history <id>")
+    (let [te (if (str/starts-with? id "@") id (str "@" id))
+          entries (if (.exists (io/file path))
+                    (->> (str/split-lines (clojure.core/slurp path))
+                         (remove str/blank?)
+                         (keep (fn [line] (try (edn/read-string line) (catch Exception _ nil))))
+                         (filter (fn [m] (= (:l m) te)))
+                         ;; :tx is the sole order; coerce so a corrupt non-numeric :tx
+                         ;; can't crash the comparator (Long-vs-String) — bad line floats to 0.
+                         (sort-by (fn [m] (let [t (:tx m)] (if (number? t) t 0))))
+                         vec)
+                    [])]
+      (if (empty? entries)
+        (println (str "no history for " te))
+        (do
+          (println (str "history of " te " — " (count entries) " event(s)   (when · tx · who · what)"))
+          (doseq [m entries]
+            (let [raw (:ts m)
+                  ;; real ISO instant, else "—" (covers missing :ts and the legacy "t" placeholder)
+                  ts (if (and (string? raw) (str/includes? raw "T")) raw "—")
+                  who (or (:frame m) (:by m) "?")
+                  txn (if (number? (:tx m)) (str "tx" (:tx m)) "tx?")
+                  op (if (= (:op m) "retract") "retract" "assert ")
+                  flat (str/replace (str (:r m)) #"\s+" " ")
+                  rv (if (> (count flat) 72) (str (subs flat 0 71) "…") flat)]
+              (println (str "  " (format "%-30s" ts) "  " (format "%-5s" txn) "  "
+                            op "  " (format "%-8s" who) "  " (:p m) " = " rv)))))))))
 
 ;; --- coordinator client: write THROUGH the daemon (safe concurrent path) -----
 ;; One request/response over the local socket. The daemon serializes writes

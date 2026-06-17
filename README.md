@@ -137,8 +137,11 @@ mode. Whoever runs the server, the data is never locked in.
 
 - **Your data is two plain-text things you can `grep`:** your Markdown threads,
   and an append-only `claims.log`. No proprietary format, no lock-in, no telemetry.
-- **Nothing is ever overwritten.** The log is the history; every change is
-  provenanced and recoverable. Git is your backup.
+- **The log is the history, and it's recoverable.** Live writes (coordinator/CLI)
+  append; each line records *who* wrote it and *when*. `fram history <id>` replays an
+  entity's timeline — who · when · what, in `tx` order. (`import`/`merge` rebuild the
+  log from your Markdown — refusing if that would drop un-exported writes — so the
+  Markdown is the portable current-state view; the log, kept in Git, is the durable history.)
 - **You can always leave.** `fram export` regenerates your Markdown
   claim-identically, so you walk away with exactly what you put in.
 - **Nothing to build.** The compiled code is committed; running it needs only
@@ -155,6 +158,7 @@ git clone https://github.com/tompassarelli/fram && cd fram
 bin/fram import
 bin/fram validate
 bin/fram show 2026-01-01-090500
+bin/fram history 2026-01-01-090500   # the entity's timeline — who · when · what, in tx order
 bin/fram export /tmp/regen      # verified-lossless round-trip
 
 # 3. Point it at your own threads (any directory of .md files)
@@ -167,9 +171,10 @@ bin/fram-up                     # ensure the coordinator is up (idempotent)
 bin/fram tell <id> committed 2026-06-17   # writes go through the coordinator (serialized, rule-checked)
 ```
 
-Engine command surface: `import · export <dir> · show <id> · validate · watch ·
-set <id> <pred> <val> · tell <id> <pred> <val> · untell <id> <pred> <val> ·
-merge <from> <to>`, plus the daemon (`bin/fram-daemon`, `bin/fram-up`). The life
+Engine command surface: `import · export <dir> · show <id> · history <id> ·
+validate · watch · set <id> <pred> <val> · tell <id> <pred> <val> ·
+untell <id> <pred> <val> · merge <from> <to>`, plus the daemon (`bin/fram-daemon`,
+`bin/fram-up`). The life
 verbs (`ready` / `blocked` / `leverage` / `next` / `capture` / `agenda`) are a
 consumer's, not the engine's.
 

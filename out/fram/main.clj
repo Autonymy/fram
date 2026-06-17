@@ -118,11 +118,12 @@
   (= cmd "validate") (cmd-validate log)
   (= cmd "watch") (cmd-watch)
   (= cmd "show") (cmd-show log (if (> (count args) 1) (nth args 1) ""))
+  (= cmd "history") (if (> (count args) 1) (fram.rt/history log (nth args 1)) (println "usage: history <id>"))
   (= cmd "set") (if (>= (count args) 4) (cmd-set log (nth args 1) (nth args 2) (nth args 3)) (println "usage: set <id> <pred> <value>"))
   (= cmd "merge") (if (>= (count args) 3) (cmd-merge log (nth args 1) (nth args 2)) (println "usage: merge <from-entity> <to-entity>"))
   (= cmd "tell") (if (>= (count args) 4) (cmd-tell "assert" (nth args 1) (nth args 2) (nth args 3)) (println "usage: tell <id> <pred> <value>"))
   (= cmd "untell") (if (>= (count args) 4) (cmd-tell "retract" (nth args 1) (nth args 2) (nth args 3)) (println "usage: untell <id> <pred> <value>"))
-  :else (println "fram (engine) usage: import | export <out-dir> | show <id> | validate | watch | set <id> <pred> <value> | tell <id> <pred> <value> | untell <id> <pred> <value> | merge <from> <to>"))))
+  :else (println "fram (engine) usage: import | export <out-dir> | show <id> | history <id> | validate | watch | set <id> <pred> <value> | tell <id> <pred> <value> | untell <id> <pred> <value> | merge <from> <to>"))))
 
 (defn -main [& args]
   (run (vec args) (fram.rt/threads-dir) (fram.rt/log-path)))
