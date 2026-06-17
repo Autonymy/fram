@@ -204,14 +204,17 @@
     (doseq [spec cat]
       (println (str "  " (:name spec) "  —  " (:desc spec))))))
 
-(defn- print-rows [rows :- Any] :- Nil
+;; GAP at the element only: rows are heterogeneous across ops (IdTitle/PredVal/
+;; ThreadViolation/String/tuple), so the element is Any; the container is typed.
+(defn- print-rows [rows :- (Vec Any)] :- Nil
   (if (empty? rows)
     (println "  (no results)")
     (doseq [r rows] (println (str "  " r)))))
 
 ;; route a tool's write-intent {:op :l :p :r} through the coordinator (reuses the
-;; same serialized, rule-checked path as `tell`).
-(defn- route-write [w :- Any] :- Nil
+;; same serialized, rule-checked path as `tell`). `w` is the open keyword-map write
+;; value from call's result envelope (a record would not = the test's map literal).
+(defn- route-write [w :- (Map Keyword Any)] :- Nil
   (let [resp (tell-retry (fram.rt/coord-port) (:op w) (:l w) (:p w) (:r w) 5)]
     (cond
       [(= resp "nodaemon") (println (str "no coordinator on 127.0.0.1:" (fram.rt/coord-port) " — start it with bin/fram-up"))]
