@@ -78,15 +78,51 @@
 
 ;; wall-clock budget on the AI-facing path: validation makes a query STRUCTURALLY
 ;; safe, but evaluation is naive, so a deeply recursive query can be slow. Bound it
-;; here (the model can't hang the server). 10s is generous for the corpus sizes Fram
-;; targets; the CLI path runs unbounded (a human can Ctrl-C).
+;; here. 10s is generous for the corpus sizes Fram targets; the CLI path runs
+;; unbounded (a human can Ctrl-C).
+;;
+;; IMPORTANT: future-cancel only sets the worker's interrupt flag — it does NOT
+;; stop CPU-bound work that never checks Thread.interrupted()/blocks. The naive
+;; datalog fixpoint (fram.datalog/fixpoint) is exactly that: tight reduce/loop
+;; forms with no interruption checks, so a cancelled runaway query would keep
+;; pinning a core indefinitely, and "repeat a few times" pins every core. We can't
+;; make the engine cooperatively interruptible from here (that per-iteration bound
+;; belongs in fram.datalog, owned elsewhere — see FOLLOW-UP below), so we bound the
+;; BLAST RADIUS two ways the budget can actually enforce:
+;;   (1) run on a DAEMON thread we set the interrupt flag on and then abandon, so a
+;;       runaway never keeps the JVM alive and is reaped on process exit; and
+;;   (2) a hard CAP on how many query workers may be alive at once — an orphaned
+;;       runaway holds its slot until it (eventually) finishes, so a client cannot
+;;       pile up unbounded CPU-pegged threads by repeating an expensive query. Once
+;;       the cap is hit, further queries are refused FAST (within budget) instead of
+;;       spawning yet another never-dying core-pinning thread.
+;; FOLLOW-UP (fram.datalog): add a cooperative deadline / max-iterations /
+;; max-derived-facts bound inside fixpoint so a runaway actually STOPS at the
+;; budget rather than running to completion on its abandoned daemon thread.
+(def ^:private max-live-queries
+  (max 1 (quot (.. Runtime getRuntime availableProcessors) 2)))
+(def ^:private live-queries (atom 0))
+
 (defn- with-timeout [ms thunk]
-  (let [f (future (thunk))
-        r (deref f ms ::timeout)]
-    (if (= r ::timeout)
-      (do (future-cancel f)
-          {:isError true :text (str "query exceeded the " (quot ms 1000) "s time budget — narrow it (fewer rules / more constants)")})
-      r)))
+  ;; reserve a worker slot; refuse fast if too many (possibly orphaned) are alive.
+  (if (> (swap! live-queries inc) max-live-queries)
+    (do (swap! live-queries dec)
+        {:isError true :text (str "query budget: too many concurrent/abandoned queries in flight (>" max-live-queries ") — a prior expensive query is still running; retry later or narrow it")})
+    (let [result (promise)
+          worker (doto (Thread.
+                        (fn []
+                          (try (deliver result (thunk))
+                               (catch InterruptedException _ (deliver result ::timeout))
+                               (catch Throwable t (deliver result {:isError true :text (str "query failed: " (.getMessage t))}))
+                               (finally (swap! live-queries dec)))))
+                   (.setDaemon true)         ; never blocks JVM shutdown
+                   (.setName "fram-mcp-query")
+                   (.start))
+          r (deref result ms ::timeout)]
+      (if (= r ::timeout)
+        (do (.interrupt worker)              ; best-effort; abandoned if it ignores us
+            {:isError true :text (str "query exceeded the " (quot ms 1000) "s time budget — narrow it (fewer rules / more constants)")})
+        r))))
 
 ;; --- JSON-RPC plumbing -------------------------------------------------------
 (defn- reply [id result] (println (json/generate-string {:jsonrpc "2.0" :id id :result result})) (flush))
