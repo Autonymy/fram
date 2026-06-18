@@ -166,10 +166,27 @@ separate) is **satisfied and verified**, distinct from the physical repo questio
   graph (`chartroom.clj`). Beagle's gates *rent* it (the scope-correct-rename gate
   drives chartroom's resolver) — a consumer using the engine, not the language owning
   it. That's the layering working as intended.
-- **The repair/reasoning TOOLING in `beagle/bin`** (cascade, callgraph, the
-  code-as-claims gates) is separate scripts that depend on Fram — not in the compiler.
-  A *physical* relocation to a dedicated repo is **org churn the principle does not
-  require** (the language is already clean) and would risk breaking beagle's dev loop
-  + CI gates + `beagle-repair` refs + raco links for marginal benefit. So the honest
-  call: the boundary is clean and verified; a repo-split is a separate, deliberate
-  migration to scope on its own merits, not a cleanliness fix.
+- **The repair/reasoning TOOLING in `beagle/bin`** (cascade, repair, the code-as-claims
+  gates) is separate scripts that depend on Fram — not in the compiler. These are
+  Layer-3 *consumer* glue (beagle renting Layer 2 for its own code) and correctly stay
+  in beagle.
+
+## Repo-split — DONE for the engine (2026-06-18, targeted not blunt)
+
+The principle was satisfied (engine in chartroom); the one *real* debt was **duplicated
+engine logic**: the scope-correct call-graph core (`derive-block`/`build-graph`/blast)
+was copy-pasted in BOTH `beagle/bin/_beagle-callgraph.clj` AND `chartroom/src/chartroom.clj`.
+So the split done is the one worth doing — **consolidate the engine into chartroom, kill
+the duplication, have everyone rent it**, NOT a blunt relocation of the `bin/` consumer glue:
+
+- `chartroom/src/callgraph.clj` is now the SINGLE call-graph engine (parse-corpus,
+  scope-correct `build-graph`, Fram-Datalog blast; requirable + a `bb -m callgraph` CLI).
+- `chartroom.clj` rents it (its copy of the core deleted; benchmark output byte-identical).
+- `beagle/bin/beagle-callgraph` rents it via `$CHARTROOM/src/callgraph.clj` (env, like the
+  rename gate); beagle's `_beagle-callgraph.clj` is **deleted**. CI passes `CHARTROOM=.chartroom`.
+- Verified: cascade-graph gate green renting the engine (incl. a relocated CHARTROOM; a
+  bogus CHARTROOM fails closed); chartroom gjoa + gjoa-full benchmarks identical.
+
+A *new* dedicated repo was rejected as the actual churn (chartroom already IS the engine
+repo, already rented by beagle CI). The `'claims` emit backend + byte-stable formatter stay
+in beagle (a language backend, like emit-js). One engine, zero duplication, no new infra.
