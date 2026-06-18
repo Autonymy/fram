@@ -12,7 +12,11 @@
 ;; own engine" gap. ONE source of truth (fram's signatures), not two.
 (require '[clojure.string :as str] '[clojure.java.io :as io])
 
-(def root (or (System/getenv "FRAM") (str (System/getProperty "user.home") "/code/fram")))
+;; root = FRAM env > the repo this script lives in (bin/fram-primer -> ../.. = fram root;
+;; robust under any cwd, incl. CI where the checkout isn't ~/code/fram) > home fallback.
+(def root (or (System/getenv "FRAM")
+              (when *file* (-> (io/file *file*) .getCanonicalFile .getParentFile .getParentFile .getPath))
+              (str (System/getProperty "user.home") "/code/fram")))
 (defn src [f] (str root "/src/fram/" f))
 
 ;; --- extract public (defn name [typed args] :- Ret) signatures + a leading ;; doc ----
