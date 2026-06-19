@@ -944,18 +944,23 @@
 (declare maybe-reload!)
 
 (defn handle [req]
+  ;; (#14 socket EXPOSURE) :edit-min runs OUTSIDE the outer dlock. do-edit-min's compute
+  ;; (clone/verb/harvest) is lock-free and its COMMIT phase already takes dlock itself (the (B)
+  ;; boundary), so wrapping the whole op in the outer dlock re-serializes the lock-free compute
+  ;; and HIDES the concurrency the logic layer + the 150-pair commute already proved. maybe-reload!
+  ;; is a no-op in v2-log mode (the code daemon, where :edit-min lives), so skipping it here is
+  ;; safe; the commit still serializes under dlock and is OCC-checked per (te,p) at commit time.
+  (if (= :edit-min (:op req))
+    (try (do-edit-min (:spec req))
+         (catch Throwable t {:reject [(str "edit-min: " (.getMessage t))]
+                             :version (current-seq @co)}))
   (locking dlock                       ; serialize reload + writes + reads (drop-in mode)
     (maybe-reload!)                     ; absorb external flat edits (no-op in v2-log mode)
     (case (:op req)
       :version  {:version (current-seq @co)}
       :assert   (do-assert (:te req) (:p req) (:r req) (:base req))
       :retract  (do-retract (:te req) (:p req) (:r req) (:base req))
-      ;; minimal-op authoring edit: run the verb over a clone, commit ONLY its own
-      ;; mint/supersede ops through the wire (Build A). A 1-line set-body = a handful
-      ;; of ops, not a whole-module ~7800-op churn. Disjoint same-module edits commute.
-      :edit-min (try (do-edit-min (:spec req))
-                     (catch Throwable t {:reject [(str "edit-min: " (.getMessage t))]
-                                         :version (current-seq @co)}))
+      ;; :edit-min is handled ABOVE, outside the outer dlock (socket exposure) — see top of handle.
       :validate {:violations (all-violations (index!))}
       ;; AST/Datalog query over the WARM in-memory graph — the read surface the cold
       ;; CLI/MCP path lacked. Runs fram.query/run (validate + fixpoint) against the
@@ -1005,7 +1010,7 @@
       ;; reads off `co`; :ground recomputes whole-corpus over a CLONE (never disturbs
       ;; `co`'s scoped state), so both keysets come from the same store snapshot.
       :refers-keyset (do (ensure-refers!) (refers-keyset-resp))
-      {:error "unknown op"})))
+      {:error "unknown op"}))))
 
 ;; ---- socket server (verbatim shape from the proven coord.clj) ---------------
 ;; Hardened (findings #2/#5/#19/#20): every accepted socket gets a read timeout
