@@ -48,6 +48,11 @@
 ;; (so :query/:warm-check/the read view never see them); the materialize step rolls
 ;; back the seq-space the resolver's tx consumed.
 (def resolve-preds #{"refers_to" "keep_spelling" "qualifier" "ctor_prefix" "accessor_field" "supersedes"})
+;; #(a) identity: bound_to is DURABLE (persisted to the flat log — an authored identity edge,
+;; reference -> binding's stable @mod#int) but for option-1 scope is kept OUT of read projections
+;; (:query/datalog/warm-cache/tripwire) — render+resolve read it off the store directly. Filtered
+;; HERE (read view) WITHOUT being a resolve-pred (which would strip it from the store + roll back seq).
+(def read-hidden-preds #{"bound_to"})
 (def refers-version (atom -1))       ; the co version refers_to was last materialized at
 
 ;; ---- S3.3: scoped re-resolve state -----------------------------------------
@@ -171,7 +176,7 @@
 ;; claims the flat log ingested, identical whether or not refers_to has been materialized.
 (defn- claim->triple [st cid]
   (let [cl (c/claim-of st cid) pstr (c/literal st (:p cl))]
-    (when-not (or (schema-preds pstr) (resolve-preds pstr))
+    (when-not (or (schema-preds pstr) (resolve-preds pstr) (read-hidden-preds pstr))
       [(s/name-of st (:l cl)) pstr
        (if (c/value-object? st (:r cl)) (c/literal st (:r cl)) (s/name-of st (:r cl)))])))
 
@@ -830,6 +835,34 @@
             op))
         asserts))
 
+;; #(a) O(1) rename precondition: before renaming a def, PERSIST a durable bound_to edge from
+;; every reference of it to the def's stable @mod#int. The rename then changes only the binding's
+;; display name; references keep their identity edge and a cold re-render follows it to the CURRENT
+;; name (instead of re-deriving by spelling and missing the renamed def). Idempotent.
+;;
+;; Runs under dlock (caller). ensure-refers! first materializes the warm refers_to (spelling-derived
+;; on the first rename; identity-preserving on later ones) over `co`; B = the def binding node-id
+;; (def-binding via with-resolve-read, the SAME node refers_to points at). For each reference leaf
+;; whose refers_to lands on B, do-assert a `bound_to` link (leaf -> B's @mod#int). do-assert appends
+;; to the flat log (durable) and commits to the warm store; bound_to is multi-valued + survives
+;; strip-resolve-claims! (not a resolve-pred) and is filtered from read projections (read-hidden-preds).
+(defn- persist-bound-for-rename! [spec]
+  (ensure-refers!)                                   ; materialize warm refers_to (frames + edges)
+  (let [st     (:store @co)
+        REFp   (c/value-id st "refers_to")
+        B      (target-node {:module (:module spec) :name (:old spec)})]
+    (when (and B REFp)
+      (let [BND     (or (c/value-id st "bound_to") (c/value! st "bound_to"))
+            v0      (current-seq @co)
+            B-name  (s/name-of st B)
+            already (set (map #(:l (c/claim-of st %)) (c/by-p st BND)))
+            ref-leaves (->> (c/by-p st REFp)
+                            (map #(c/claim-of st %))
+                            (filter #(= B (:r %)))
+                            (map :l) distinct)]
+        (doseq [leaf ref-leaves :when (not (already leaf))]
+          (do-assert (s/name-of st leaf) "bound_to" B-name v0))))))
+
 ;; do-edit-min: run the verb over a CLONE, harvest its minimal delta as wire ops, and
 ;; commit those through do-assert/do-retract on the REAL `co`. te-naming for new nodes
 ;; is assigned here (the verb mints nameless local entities on the clone).
@@ -842,18 +875,15 @@
     (when-not (#{"set-body" "upsert-form" "insert-form" "rename"} (:op spec))
       (throw (ex-info (str "edit-min: unknown verb '" (:op spec) "' (known: set-body, upsert-form, rename)")
                       {:reject :unknown-verb})))
-    ;; GRAPH RENAME IS IDENTITY-DEFERRED — reject, do NOT silently do the wrong thing.
-    ;; verb-rename! is O(1): it rewrites the DEF binding's spelling only and relies on
-    ;; references following refers_to (identity). On the mainline SPELLING+derive model a
-    ;; cold render re-derives refers_to BY SPELLING, so old-spelled references can't re-resolve
-    ;; to the renamed def → the rename renders the OLD name (measured: cnf_rename_spelling_check.clj
-    ;; — 2 ops, def rewritten, 2 reference leaves still "replace!"). A correct mainline rename is
-    ;; O(N) (rewrite every reference spelling) and is NOT built. Same identity-deferral as gate-v2
-    ;; (docs/VIEWS_AND_BRANCHES.md). Re-enable when references carry identity OR an O(N) rewrite
-    ;; verb lands. (The text-path CLI rename still works as a same-process projection.)
+    ;; #(a) GRAPH RENAME IS NOW O(1) — references carry DURABLE identity. verb-rename! rewrites
+    ;; the DEF binding's spelling only; references follow `bound_to` (the binding's stable @mod#int),
+    ;; persisted HERE before the rename so a cold re-render resolves them by IDENTITY, not by spelling
+    ;; (the old failure: cnf_rename_spelling_check.clj — old-spelled refs re-derived to nothing and
+    ;; rendered the OLD name). persist-bound-for-rename! is idempotent + appends bound_to to the flat
+    ;; log (durable). Content-hashes (increment (b)) are explicitly OUT of scope: identity is the
+    ;; existing sequential @mod#int. (The text-path CLI rename still works as a same-process projection.)
     (when (= "rename" (:op spec))
-      (throw (ex-info "rename requires identity refs; deferred — O(1) graph rename needs identity, mainline is spelling+derive (O(N) spelling-rewrite not built). See docs/VIEWS_AND_BRANCHES.md."
-                      {:reject :identity-deferred})))
+      (locking dlock (persist-bound-for-rename! spec)))
     (let [real   (:store @co)
           clone  (atom @real)                       ; O(1) structural clone; verb writes here only
           since  (:next-id @clone)
