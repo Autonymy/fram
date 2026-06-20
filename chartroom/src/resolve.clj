@@ -78,6 +78,7 @@
 ;; render-mode marker predicate value-ids — DYNAMIC, rebound (recomputed against
 ;; the fresh store) inside `resolve-edn!`; store-local ids must match their store.
 (def ^:dynamic Vp nil) (def ^:dynamic KIND nil) (def ^:dynamic REFERS nil)
+(def ^:dynamic BOUND nil)   ; #(a) the DURABLE identity edge `bound_to` (persisted; reference -> binding's @mod#int)
 (def ^:dynamic FIXED nil) (def ^:dynamic QUAL nil)   ; render-mode markers
 (def ^:dynamic CTOR nil)    ; a `->Name` auto-constructor ref: render `->` + the type's name
 (def ^:dynamic ACC  nil)    ; a synth field accessor `<lower(Name)>-<field>`: stores the field
@@ -144,10 +145,17 @@
                         (when (and (string? p) (re-matches #"seg\d+" p)) [(parse-long (subs p 3)) (:r cl)]))))
        (sort-by first) (mapv second)))
 (defn head-sym [e] (when (= "list" (kind-of e)) (sym-val (first (ordered-children e)))))
+(defn bound-target
+  "The DURABLE identity target of reference `L` — the bound_to edge points at the binding's
+   stable @mod#int node-id, not its spelling. nil if L carries no durable edge (legacy/unedged
+   refs fall back to the spelling-derived refers_to)."
+  [L] (when BOUND (let [cs (c/by-lp ctx L BOUND)] (when-let [cid (select-main-1 cs)] (:r (c/claim-of ctx cid))))))
 (defn refers-target
-  "The binding node that reference `L` resolves to in the default-main view (SELECTS via
-   select-main-1 over the derived refers_to group; re-derived per resolve). Not a uniqueness proof."
-  [L] (let [cs (c/by-lp ctx L REFERS)] (when-let [cid (select-main-1 cs)] (:r (c/claim-of ctx cid)))))
+  "The binding node reference `L` resolves to (default-main view). Prefers the DURABLE bound_to
+   identity edge; falls back to the derived refers_to (spelling-walk) for unedged/legacy refs.
+   Not a uniqueness proof (select-main-1)."
+  [L] (or (bound-target L)
+          (let [cs (c/by-lp ctx L REFERS)] (when-let [cid (select-main-1 cs)] (:r (c/claim-of ctx cid))))))
 (defn live-node? [e] (seq (c/by-lp ctx e KIND)))
 
 ;; --- binding extraction -----------------------------------------------------
@@ -308,6 +316,10 @@
     (let [nm (sym-val node)
           local (some #(get % nm) scope)]       ; nearest frame binding nm
       (cond
+        ;; #(a) identity: a reference with a DURABLE bound_to edge resolves by IDENTITY
+        ;; (binding's stable @mod#int), not by spelling — so a target rename (display-name only)
+        ;; leaves this intact and render follows it to the target's CURRENT name. Spelling is the fallback.
+        (bound-target node) (bind! node (bound-target node))
         local (bind! node local)
         ;; free symbol: cross-module value/type import (:refer/:rename/:as), else a
         ;; module-local TYPE used in value position (a constructor `(Point ...)` /
@@ -647,7 +659,7 @@
      (c/set-supersedes-pred! store sup)
      (binding [ctx store, tx t, SUP sup
                file->ents (atom {})
-               Vp (c/value! store "v") KIND (c/value! store "kind") REFERS (c/value! store "refers_to")
+               Vp (c/value! store "v") KIND (c/value! store "kind") REFERS (c/value! store "refers_to") BOUND (c/value! store "bound_to")
                FIXED (c/value! store "keep_spelling") QUAL (c/value! store "qualifier")
                CTOR (c/value! store "ctor_prefix") ACC (c/value! store "accessor_field")
                n-resolved (atom 0) n-unresolved (atom 0) n-xmod (atom 0) n-type (atom 0) n-comment (atom 0)
@@ -776,7 +788,7 @@
      (c/set-supersedes-pred! store sup)
      (binding [ctx store, tx t, SUP sup
                file->ents (atom {})
-               Vp (c/value! store "v") KIND (c/value! store "kind") REFERS (c/value! store "refers_to")
+               Vp (c/value! store "v") KIND (c/value! store "kind") REFERS (c/value! store "refers_to") BOUND (c/value! store "bound_to")
                FIXED (c/value! store "keep_spelling") QUAL (c/value! store "qualifier")
                CTOR (c/value! store "ctor_prefix") ACC (c/value! store "accessor_field")
                n-resolved (atom 0) n-unresolved (atom 0) n-xmod (atom 0) n-type (atom 0) n-comment (atom 0)
@@ -809,7 +821,7 @@
      (c/set-supersedes-pred! store sup)
      (binding [ctx store, tx t, SUP sup
                file->ents (atom {})
-               Vp (c/value! store "v") KIND (c/value! store "kind") REFERS (c/value! store "refers_to")
+               Vp (c/value! store "v") KIND (c/value! store "kind") REFERS (c/value! store "refers_to") BOUND (c/value! store "bound_to")
                FIXED (c/value! store "keep_spelling") QUAL (c/value! store "qualifier")
                CTOR (c/value! store "ctor_prefix") ACC (c/value! store "accessor_field")
                n-resolved (atom 0) n-unresolved (atom 0) n-xmod (atom 0) n-type (atom 0) n-comment (atom 0)
