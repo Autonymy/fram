@@ -73,3 +73,21 @@ at high N beats a clean win.
 Mechanism-at-scale, **self-sourced** N (honeysql has no issue-sourced multi-site rename). Tier 1 is
 unimpeachable + language-clean; Tier 2 is the typed-graph-vs-dynamic-text combined story. Not a
 cherry-picked magnitude. Issue-sourced refactoring + pure-addressing (Clojure-graph) are later arms.
+
+## Sharpened before the N≈12 run — measure DIVERGENCE, not just level (added pre-run)
+1. **Measure lsp's wall-time at EVERY N, not just the graph's.** "lsp's edit+verification grows with N"
+   bundles two things. The EDIT half (lsp rename wall-time) is plausibly ~FLAT in N (cached analysis +
+   cheap edits) — a guess the run must SETTLE, so lsp wall-time goes in the vector at every N.
+   **Latency-LEVEL (graph slower at every N) is NOT latency-DIVERGENCE (does the gap widen).** Only
+   divergence is thesis-relevant; if lsp is also flat, the latency axis shows a constant gap, not
+   divergence, and "graph loses latency" must not be dressed up as the latency-axis thesis result.
+2. **Verification-burden metric — gives Tier 2 a number even when lsp is fully correct.** Define it as
+   the **count of textual `\b<oldname>\b` occurrences NOT in lsp's edit-set** = occurrences a rigorous
+   agent must inspect to confirm none is a missed dynamic/string-embedded reference (the tool left them
+   untouched; are they correctly prose, or a missed ref?). Deterministic (grep-count minus edit-set
+   count), expected to grow with N, and the **graph's equivalent is structurally 0** (non-references are
+   separate claim nodes; nothing to disposition). This is the Tier-1 guarantee turned into a measured
+   cost: the text arm pays to verify what the graph makes free, whether or not lsp ever fails. The
+   measured-MISS stays the stronger, contingent-on-a-dynamic-ref result; verification-burden is the
+   weaker, ALWAYS-available one. **If it comes out ~0 for honeysql's clean static symbols, that is itself
+   the honest ceiling** (Tier 2 is weak on honeysql), stated now not discovered later.
