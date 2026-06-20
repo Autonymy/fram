@@ -913,7 +913,12 @@
   (with-open [w (clojure.java.io/writer out-path)]
     (binding [*out* w]
       (println (str "@file " src))
-      (let [wrap (when (seq *deleted-forms*) (wrapper-of src))
+      (let [wrap (wrapper-of src)   ; #36: ALWAYS renumber wrapper form-edges to consecutive
+                                    ;; integers. The graph keeps CRDT keys (f<path>~<tie>); the
+                                    ;; .bclj view must be clean integer fN so racket --render (which
+                                    ;; only understands integer fN) sees every form. Previously this
+                                    ;; ran ONLY under deletes, so a CRDT-keyed insert survived raw
+                                    ;; and racket silently dropped it. Idempotent for clean modules.
             ;; REACHABILITY filter: emit ONLY nodes reachable from the beagle-file
             ;; wrapper via LIVE structural edges (fN/tail/segN/commentN/child). An
             ;; authoring verb that SUPERSEDES a body/form fN edge (set-body, upsert
@@ -929,8 +934,9 @@
         (doseq [e (@file->ents src) :when (and (not (*deleted-subtree* e)) (keep? e)), cid (c/by-l ctx e)]
           (let [cl (c/claim-of ctx cid) p (:p cl) r (:r cl) ps (c/literal ctx p)]
             (cond
-              ;; wrapper form-edges under a delete: drop them; renumbered ones re-emitted below
-              (and (= e wrap) (string? ps) (re-matches #"f\d+" ps) (pos? (parse-long (subs ps 1)))) nil
+              ;; wrapper form-edges: drop them all (except f0, the beagle-file head); the
+              ;; surviving forms are re-emitted at consecutive integer fN below.
+              (and (= e wrap) (string? ps) (ord-pos? ps) (not= ps "f0")) nil   ; #36: wrapper form-edge (old f<int> OR new CRDT key) except f0 (beagle-file head) — renumbered consecutively below
               (#{"supersedes" "refers_to" "keep_spelling" "qualifier" "ctor_prefix" "accessor_field"} ps) nil  ; internal edges
               (and (= ps "v") (refers-target e))              ; a resolved reference: render per mode
               (let [D (refers-target e)
