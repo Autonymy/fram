@@ -872,8 +872,8 @@
     ;; (#26) reject UNKNOWN verbs early — before the expensive clone/corpus build and before
     ;; they can fall through to run-verb-warm!'s `(System/exit 2)` default, which would HARD-EXIT
     ;; the daemon on a malformed client request. Known verbs: set-body, upsert-form, rename.
-    (when-not (#{"set-body" "upsert-form" "insert-form" "rename"} (:op spec))
-      (throw (ex-info (str "edit-min: unknown verb '" (:op spec) "' (known: set-body, upsert-form, rename)")
+    (when-not (#{"set-body" "upsert-form" "insert-form" "insert-comment" "rename"} (:op spec))
+      (throw (ex-info (str "edit-min: unknown verb '" (:op spec) "' (known: set-body, upsert-form, insert-form, insert-comment, rename)")
                       {:reject :unknown-verb})))
     ;; #(a) GRAPH RENAME IS NOW O(1) — references carry DURABLE identity. verb-rename! rewrites
     ;; the DEF binding's spelling only; references follow `bound_to` (the binding's stable @mod#int),

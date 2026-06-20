@@ -1266,6 +1266,50 @@
         (author-emit-scoped! "insert-form"
                       (str "inserted def after `" after-name "` in \"" scope "\" (CRDT mid-insert)"))))))
 
+;; insert-comment — author a standalone LINE comment (Turtle #6) leading/trailing an
+;; anchor def. Comments do NOT live in the wrapper fN order; they attach to their anchor
+;; FORM via a `commentN` edge (claims-roundtrip.rkt comment-edn-lines). This mints a
+;; kind="comment" node + one `text` seg (the lexeme) + the commentN edge — the FIRST
+;; incremental authoring of a comment node (text->graph ingest was previously the only
+;; way one entered the graph). The seg is a single `text` run (renders verbatim); symbol
+;; segs (rename-tracked identifier mentions) are a follow-up — a text seg is correct and
+;; lossless for an authored note.
+(defn- next-comment-idx [form]            ; next free commentN slot on a form (0 if none)
+  (->> (c/by-l ctx form) (map #(c/claim-of ctx %))
+       (keep (fn [cl] (let [p (c/literal ctx (:p cl))]
+                        (when (and (string? p) (re-matches #"comment\d+" p)) (parse-long (subs p 7))))))
+       (reduce max -1) inc))
+(defn verb-insert-comment! [scope anchor-name text placement]
+  (let [target-srcs (filter #(str/includes? % scope) srcs)]
+    (when (not= 1 (count target-srcs))
+      (binding [*out* *err*] (println (str "REJECTED — insert-comment scope \"" scope "\" matches "
+                                           (count target-srcs) " files (need 1).")))
+      (*reject!* 3))
+    (when (str/blank? text)
+      (binding [*out* *err*] (println "REJECTED — insert-comment needs non-empty --text; no claims mutated."))
+      (*reject!* 3))
+    (let [src  (first target-srcs)
+          plc  (if (#{"leading" "trailing"} placement) placement "leading")
+          lex  (if (str/starts-with? (str/triml text) ";") text (str ";; " text))  ; lexeme keeps the leading ; (matches ingest capture)
+          anchor-bind (def-binding src anchor-name)
+          anchor-form (when anchor-bind (form-for-victim src anchor-bind))]
+      (when (nil? anchor-form)
+        (binding [*out* *err*] (println (str "REJECTED — insert-comment anchor `" anchor-name "` not found in \"" scope "\".")))
+        (*reject!* 3))
+      (let [k     (next-comment-idx anchor-form)
+            cnode (register! src (c/entity! ctx))
+            seg   (register! src (c/entity! ctx))]
+        (c/claim! ctx cnode KIND (c/value! ctx "comment") tx)
+        (c/claim! ctx cnode (c/value! ctx "style") (c/value! ctx "line") tx)
+        (c/claim! ctx cnode (c/value! ctx "placement") (c/value! ctx plc) tx)
+        (c/claim! ctx seg  KIND (c/value! ctx "text") tx)
+        (c/claim! ctx seg  Vp   (c/value! ctx lex) tx)
+        (c/claim! ctx cnode (c/value! ctx "seg0") seg tx)
+        (c/claim! ctx anchor-form (c/value! ctx (str "comment" k)) cnode tx)
+        (when-not *capture-only?* (re-resolve!))
+        (author-emit-scoped! "insert-comment"
+                      (str "added " plc " comment on `" anchor-name "` in \"" scope "\" (comment" k "; 1 text seg minted)"))))))
+
 ;; set-body — replace a defn's body with a freshly-minted body datum.
 (defn verb-set-body! [name scope datum]
   (let [target-srcs (filter #(str/includes? % scope) srcs)]
@@ -1330,6 +1374,7 @@
              "rename"      (verb-rename! (:old spec) (:new spec) module)
              "upsert-form" (verb-upsert-form! module (:datum spec))
              "insert-form" (verb-insert-form! module (:after spec) (:datum spec))   ; CRDT mid-insert (#36)
+             "insert-comment" (verb-insert-comment! module (:after spec) (:text spec) (:placement spec))  ; Turtle #6 comment authoring (#30)
              "set-body"    (verb-set-body! (:name spec) module (:datum spec))
              (do (binding [*out* *err*] (println (str "run-verb-warm!: unknown op " (:op spec))))
                  (System/exit 2)))))))
