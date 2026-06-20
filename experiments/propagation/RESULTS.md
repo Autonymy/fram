@@ -41,3 +41,30 @@ whole tree; graph `:status` reads the whole warm store. Apples-to-apples.
 Sweep N ∈ {1,2,4,8} and overlap ∈ {disjoint, same-file}. Predict (pre-registered):
 graph propagation flat in N; git propagation climbs with overlap (non-ff rejects →
 fetch+merge, conflicts on same-file). An honest null vs push-hook git is a result.
+
+## K-sweep (disjoint concurrent writers) — DECOMPOSED (ms, mean)
+
+`bb -cp out experiments/propagation/sweep.clj` (SWEEP_KS=1,2,4,8). Write-side and
+propagation reported separately (v1 conflated them — fixed).
+
+| K | git-write | git-prop | graph-write | graph-prop |
+|---|----------:|---------:|------------:|-----------:|
+| 1 | 25.2 | 52.4 | 178.0 | 41.4 |
+| 2 | 28.4 | 94.1 | 173.1 | 60.8 |
+| 4 | 40.7 | 153.0 | 171.7 | 97.8 |
+| 8 | 76.0 | 351.0 | 209.9 | 197.1 |
+
+`landed = K/K` for both arms at every K — no lost writes (write-side no-clobber).
+
+**Reading (a tradeoff, not a clean sweep):**
+- **Propagation — graph wins, scales better.** git climbs 52→351 ms (6.7×) as pushes
+  serialize through the shared ref's non-ff check → fetch+merge+retry (the merge-queue,
+  P2 confirmed). graph 41→197 ms (4.8×), lower at every K. NOT perfectly flat (P1
+  partially holds) — the residual climb is daemon dlock contention on commit+`:status`,
+  an execution layer, not the substrate.
+- **Write — graph loses (the mirror cost).** graph ~175–210 ms, ~flat in K (eager
+  re-resolve maintains the query index); git 25–76 ms (cheap local commit). The graph
+  front-loads cost at write to keep propagation cheap; git defers cost to propagation.
+- Net: the substrate's bet — pay at write to make reads/propagation cheap and
+  contention-resistant — shows up exactly here. Honest column where graph loses (write)
+  reported alongside where it wins (propagation under concurrency).
