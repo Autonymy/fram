@@ -356,6 +356,17 @@
   nil)
 (defn read-lines [path]                                     ; all lines of a file as a vector
   (with-open [r (io/reader path)] (vec (line-seq r))))
+
+;; --- resolver host seam (the host-interop chartroom.resolve declares-extern) ---
+;; Genuine host calls only — exit / diagnostics / format / timing. (Regex, edn,
+;; parse-long, split-lines were de-warted to native Beagle: regex literals +
+;; clojure.string / clojure.edn / parse-long ARE native; no host indirection needed.)
+(defn exit! [code] (System/exit (long code)))                       ; *reject!* default
+(defn println-out! [s] (println s) nil)                            ; stdout diagnostic
+(defn println-err! [s] (binding [*out* *err*] (println s)) nil)    ; the (binding [*out* *err*] …) sites
+(defn nano-time [] (System/nanoTime))                              ; FRAM_PROF timing
+(defn format-str [fmt args] (apply format fmt args))              ; format with a vec of args
+
 (defn filter-digits [s] (str/replace s #"[^0-9]" ""))
 (defn is-iso-datetime-19 [s]
   (boolean (and (= 19 (count s)) (re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}" s))))
