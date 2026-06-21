@@ -1,0 +1,361 @@
+#lang beagle/clj
+;; ============================================================================
+;; fram.coord-daemon — the daemon's PURE-LOGIC CORE, authored in Beagle (cut 1).
+;; ============================================================================
+;; Self-hosting the coordinator daemon (cnf_coord_daemon.clj). This module is the
+;; read/compute core that has ZERO mutable state, ZERO host interop, and ZERO
+;; resolver coupling — pure functions over the typed store (fram.cnf/schema/kernel)
+;; and over the rendered string-triple view:
+;;   * read-bridge      : claim->triple / reified->claims / lp-live-triples
+;;   * warm index       : Idx (by-[p r] + by-[l p]) build / add / del / bucket-update
+;;   * datalog index-run: unify* / lit-candidates / eval-body-idx / idx-run / simple-query?
+;;   * write-helpers    : ref-shape? / kind-of / ast-pred-str? / allocate-positions
+;;                        / next-module-int / global-max-name-int / module-node-ids
+;;   * validate         : all-violations ; structural : node-path
+;;
+;; The atom-orchestration (warm cache, do-assert/retract, flat-log) is cut 2; the
+;; resolver-woven handlers + socket/mTLS/-main are the irreducible Clojure shim (cut 3).
+;;
+;; JUSTIFIED Any (NOT laziness — the heterogeneous-EDN boundary, same as q/run's
+;;   `q :- Any`): a claim VALUE is arbitrary EDN (c/literal :- Any); a datalog query
+;;   + its substitutions bind vars to those values. So claim->triple's value element,
+;;   the substitution maps, and the query literals stay Any. NAMES and PREDICATE
+;;   literals are genuinely String (interned identifiers) and are typed so.
+;; Rendered triples are (Vec String) — modeled by the kernel Claim (l/p/r :- String),
+;;   the existing engine-wide convention; runtime values pass through unchanged.
+;; ============================================================================
+(ns fram.coord-daemon)
+(define-mode strict)
+(require fram.types :as t)
+(require fram.cnf :as c)
+(require fram.schema :as s)
+(require fram.kernel :as ck)
+(require fram.query :as q)
+(require clojure.string :as str)
+
+;; The warm read index: the triple SET + two regroupings (by-[p r] for the datalog
+;; probe, by-[l p] to scope a write's delta to its (l,p) group). A typed record (the
+;; Clojure daemon used a bare {:triples :by-pr :by-lp} map; the record is byte-
+;; invisible — it lives only in the warm cache, never serialized — and honestly typed).
+(defrecord Idx [triples :- (Set (Vec String))
+                by-pr   :- (Map (Vec String) (Set (Vec String)))
+                by-lp   :- (Map (Vec String) (Set (Vec String)))])
+
+;; reserved engine predicates (schema), derived resolver predicates, and read-hidden
+;; identity edges — the three sets claim->triple filters so the read view sees exactly
+;; the AST/domain claims the flat log ingested (never the derived/engine layers).
+(def schema-preds   :- (Set String) #{"name" "cardinality" "value_kind" "cnf-supersedes"})
+(def resolve-preds  :- (Set String) #{"refers_to" "keep_spelling" "qualifier" "ctor_prefix" "accessor_field" "supersedes"})
+(def read-hidden-preds :- (Set String) #{"bound_to"})
+
+;; module of an AST node name "@kernel#127" -> "kernel" (same parse resolve.clj uses).
+(defn module-of-name [nm :- Any] :- String?
+  (if (string? nm)
+    (let [s :- String nm
+          m :- (U (Vec String) Nil) (re-matches #"@([^#]+)#\d+" s)]
+      (if (some? m) (nth m 1) nil))
+    nil))
+
+;; ref-shape? — is a STRING value a node reference (a link), vs a literal that merely
+;; starts with '@'? Convention: "@" + length>1 + NO whitespace (ids/node-names are
+;; whitespace-free by construction). A bare "@" / "@ " is a legitimate literal.
+(defn ref-shape? [s :- String] :- Bool
+  (and (> (count s) 1)
+       (str/starts-with? s "@")
+       (nil? (re-find #"\s" s))))
+
+;; kind from the value: a ref-shaped @-string => :link, else :assert.
+(defn kind-of [r :- Any] :- Keyword
+  (if (string? r)
+    (let [s :- String r] (if (ref-shape? s) :link :assert))
+    :assert))
+
+;; the emit-edn AST vocabulary — the predicates a code subtree is made of. Mirrors
+;; bin/fram-commit-code ast-pred? exactly (kind/v/child/tail/style/placement, the
+;; #36 CRDT position keys, and the dual f<int>/seg/comment slots).
+(defn ast-pred-str? [p :- Any] :- Bool
+  (if (string? p)
+    (let [s :- String p]
+      (or (contains? #{"kind" "v" "child" "tail" "style" "placement"} s)
+          (some? (re-matches #"f\d+(?:\.\d+)*~(?:\d+|PENDING)" s))
+          (some? (re-matches #"(?:f|seg|comment)\d+" s))))
+    false))
+
+;; CRDT (#36): a verb mints a position predicate "f<path>~PENDING"; here we set the
+;; TIE to the new node's atomic name-int (parsed from the :r-node's @mod#<int>), so
+;; concurrent same-gap inserts get distinct keys -> both land, ordered by tie (commute).
+(defn allocate-positions [asserts :- (Vec (Vec Any))] :- (Vec (Vec Any))
+  (mapv (fn [op :- (Vec Any)] :- (Vec Any)
+          (let [te :- Any (nth op 0)
+                p  :- Any (nth op 1)
+                r  :- Any (nth op 2)]
+            (if (and (string? p) (str/ends-with? (let [ps :- String p] ps) "~PENDING"))
+              (let [ps  :- String p
+                    rs  :- String (str r)
+                    mm  :- (U (Vec String) Nil) (re-matches #"@[^#]+#(\d+)" rs)
+                    tie :- String (if (some? mm) (nth mm 1) "0")]
+                [te (str (subs ps 0 (- (count ps) (count "PENDING"))) tie) r])
+              op)))
+        asserts))
+
+;; render one live claim cid into the SAME (l-name p-str r-rendered) shape build-index
+;; wants: subject -> name, predicate -> literal, object -> literal (value) | name (ref).
+;; nil for a schema/resolve/read-hidden claim (the single read-view filter point).
+(defn claim->triple [st :- (Atom t/Store) cid :- Int] :- (U (Vec Any) Nil)
+  (let [cl :- (U (Map Keyword Any) Nil) (c/claim-of st cid)]
+    (if (some? cl)
+      (let [pid  :- Int (:p cl)
+            pstr :- String (c/literal st pid)]   ; predicate literal is always an interned String
+        (if (or (contains? schema-preds pstr)
+                (contains? resolve-preds pstr)
+                (contains? read-hidden-preds pstr))
+          nil
+          (let [lid :- Int (:l cl)
+                rid :- Int (:r cl)]
+            [(s/name-of st lid)
+             pstr
+             (if (c/value-object? st rid) (c/literal st rid) (s/name-of st rid))])))
+      nil)))
+
+;; read-bridge: reified live view -> the (l p r) string Claims build-index wants.
+;; c0 is the coord handle {:store ..} (a Coord record OR migrate's plain map) — Any,
+;; :store recovered as the typed store.
+(defn reified->claims [c0 :- Any] :- (Vec ck/Claim)
+  (let [st :- (Atom t/Store) (:store c0)]
+    (vec (keep (fn [cid :- Int] :- (U ck/Claim Nil)
+                 (let [tr :- (U (Vec Any) Nil) (claim->triple st cid)]
+                   (if (some? tr)
+                     (let [a :- String (nth tr 0)     ; subject name (entities are always named)
+                           b :- String (nth tr 1)     ; predicate literal
+                           d :- String (nth tr 2)]    ; value | ref-name (kernel Claim convention)
+                       (ck/->Claim a b d))
+                     nil)))
+               (c/current-claims st)))))
+
+;; the live (l p r) triples on ONE (te-name, p-str) group, projected exactly as
+;; reified->claims would — the authoritative post-commit state of just that group.
+(defn lp-live-triples [c0 :- Any te :- String p :- String] :- (Set (Vec Any))
+  (let [st  :- (Atom t/Store) (:store c0)
+        lid :- Int? (s/resolve-name st te)
+        pid :- Int? (c/value-id st p)]
+    (if (and (some? lid) (some? pid) (not (contains? schema-preds p)))
+      (let [l :- Int lid
+            pp :- Int pid]
+        (set (keep (fn [cid :- Int] :- (U (Vec Any) Nil) (claim->triple st cid))
+                   (c/by-lp st l pp))))
+      #{})))
+
+;; ---- index-accelerated read path (warm) ------------------------------------
+;; O(claims) build of the triple set + by-[p r] + by-[l p]; O(1) delta add/del.
+(defn idx-build [claims :- (Vec ck/Claim)] :- Idx
+  (reduce (fn [acc :- Idx cl :- ck/Claim] :- Idx
+            (let [l :- String (:l cl)
+                  p :- String (:p cl)
+                  r :- String (:r cl)
+                  tr :- (Vec String) [l p r]]
+              (->Idx (conj (:triples acc) tr)
+                     (update (:by-pr acc) [p r]
+                             (fn [o :- (U (Set (Vec String)) Nil)] :- (Set (Vec String)) (conj (or o #{}) tr)))
+                     (update (:by-lp acc) [l p]
+                             (fn [o :- (U (Set (Vec String)) Nil)] :- (Set (Vec String)) (conj (or o #{}) tr))))))
+          (->Idx #{} {} {}) claims))
+
+;; Drop a key whose bucket emptied (DON'T leave it mapped to #{}) — a fresh idx-build
+;; never emits an empty bucket, so the incremental index must not either, or its
+;; representation drifts (the :warm-check tripwire fires though queries stay correct).
+(defn bucket-update [m :- (Map (Vec String) (Set (Vec String))) k :- (Vec String) v :- (Vec String)]
+  :- (Map (Vec String) (Set (Vec String)))
+  (let [nb :- (Set (Vec String)) (disj (get m k #{}) v)]
+    (if (empty? nb) (dissoc m k) (assoc m k nb))))
+
+(defn idx-add [idx :- Idx tr :- (Vec String)] :- Idx
+  (let [l :- String (nth tr 0)
+        p :- String (nth tr 1)
+        r :- String (nth tr 2)]
+    (->Idx (conj (:triples idx) tr)
+           (update (:by-pr idx) [p r]
+                   (fn [o :- (U (Set (Vec String)) Nil)] :- (Set (Vec String)) (conj (or o #{}) tr)))
+           (update (:by-lp idx) [l p]
+                   (fn [o :- (U (Set (Vec String)) Nil)] :- (Set (Vec String)) (conj (or o #{}) tr))))))
+
+(defn idx-del [idx :- Idx tr :- (Vec String)] :- Idx
+  (let [l :- String (nth tr 0)
+        p :- String (nth tr 1)
+        r :- String (nth tr 2)]
+    (->Idx (disj (:triples idx) tr)
+           (bucket-update (:by-pr idx) [p r] tr)
+           (bucket-update (:by-lp idx) [l p] tr))))
+
+;; ---- datalog index-eval (the simple-shape fast path; q/run stays the oracle) ----
+;; Substitutions bind var-name (String) -> value (Any: a triple element / query const).
+(defn var-term? [t :- Any] :- Bool
+  (if (map? t) (contains? (let [m :- (Map Any Any) t] m) :var) false))
+
+(defn unify1 [arg :- Any val :- Any s :- (Map String Any)] :- (U (Map String Any) Nil)
+  (if (var-term? arg)
+    (let [k :- String (:var (let [m :- (Map Any Any) arg] m))
+          b :- Any (get s k :coord-daemon/none)]
+      (if (= b :coord-daemon/none)
+        (assoc s k val)
+        (if (= b val) s nil)))
+    (if (= arg val) s nil)))
+
+(defn unify-tuple [args :- (Vec Any) tup :- (Vec Any) s :- (Map String Any)] :- (U (Map String Any) Nil)
+  (if (not= (count args) (count tup))
+    nil
+    (loop [a :- Any (seq args) tt :- Any (seq tup) acc :- (U (Map String Any) Nil) s]
+      (cond
+        [(nil? acc)   nil]
+        [(empty? a)   acc]
+        [:else        (recur (rest a) (rest tt)
+                             (unify1 (first a) (first tt) (let [m :- (Map String Any) acc] m)))]))))
+
+(defn resolve-arg [arg :- Any s :- (Map String Any)] :- Any
+  (if (var-term? arg)
+    (get s (:var (let [m :- (Map Any Any) arg] m)) :coord-daemon/unbound)
+    arg))
+
+;; candidate tuples for a "triple" literal: by-pr probe when BOTH p,r ground, else scan.
+(defn lit-candidates [idx :- Idx litt :- Any s :- (Map String Any)] :- Any
+  (let [args :- (Vec Any) (:args (let [m :- (Map Any Any) litt] m))
+        p :- Any (resolve-arg (nth args 1) s)
+        r :- Any (resolve-arg (nth args 2) s)]
+    (if (and (not= p :coord-daemon/unbound) (not= r :coord-daemon/unbound))
+      (get (:by-pr idx) [p r] [])
+      (:triples idx))))
+
+(defn eval-body-idx [idx :- Idx body :- (Vec Any)] :- (Vec (Map String Any))
+  (reduce (fn [substs :- (Vec (Map String Any)) litt :- Any] :- (Vec (Map String Any))
+            (reduce (fn [acc :- (Vec (Map String Any)) s :- (Map String Any)] :- (Vec (Map String Any))
+                      (reduce (fn [a :- (Vec (Map String Any)) tup :- Any] :- (Vec (Map String Any))
+                                (let [args :- (Vec Any) (:args (let [m :- (Map Any Any) litt] m))
+                                      s2 :- (U (Map String Any) Nil)
+                                        (unify-tuple args (let [tv :- (Vec Any) tup] tv) s)]
+                                  (if (some? s2) (conj a s2) a)))
+                              acc (lit-candidates idx litt s)))
+                    [] substs))
+          [{}] body))
+
+(defn ground-head [args :- (Vec Any) s :- (Map String Any)] :- (Vec Any)
+  (mapv (fn [t :- Any] :- Any
+          (if (var-term? t)
+            (get s (:var (let [m :- (Map Any Any) t] m)))
+            t))
+        args))
+
+;; the simple shape the index serves; everything else -> q/run (the oracle).
+(defn simple-query? [q :- Any] :- Bool
+  (if (map? q)
+    (let [qm :- (Map Any Any) q]
+      (if (and (not (contains? qm :strata))
+               (vector? (:rules qm))
+               (= 1 (count (let [rs :- (Vec Any) (:rules qm)] rs))))
+        (let [rule :- Any (first (let [rs :- (Vec Any) (:rules qm)] rs))]
+          (if (map? rule)
+            (let [rm :- (Map Any Any) rule
+                  body :- Any (:body rm)
+                  head :- Any (:head rm)]
+              (and (vector? body)
+                   (not (empty? (let [bv :- (Vec Any) body] bv)))
+                   (if (map? head) (not= (:rel (let [hm :- (Map Any Any) head] hm)) "triple") false)
+                   (every? (fn [l :- Any] :- Bool
+                             (if (map? l)
+                               (let [lm :- (Map Any Any) l]
+                                 (and (= "triple" (:rel lm))
+                                      (not= (:neg lm) true)
+                                      (vector? (:args lm))
+                                      (= 3 (count (let [av :- (Vec Any) (:args lm)] av)))))
+                               false))
+                           (let [bv :- (Vec Any) body] bv))))
+            false))
+        false))
+    false))
+
+;; index-accelerated run — SAME validation boundary as q/run, SAME head-tuple set.
+(defn idx-run [idx :- Idx q :- Any] :- (Map Keyword Any)
+  (let [errs :- (Vec String) (q/validate q)]
+    (if (not (empty? errs))
+      {:error errs}
+      (let [qm :- (Map Any Any) q
+            rule :- (Map Any Any) (first (let [rs :- (Vec Any) (:rules qm)] rs))
+            substs :- (Vec (Map String Any)) (eval-body-idx idx (let [b :- (Vec Any) (:body rule)] b))
+            head :- (Map Any Any) (:head rule)
+            hargs :- (Vec Any) (:args head)
+            tuples :- (Set (Vec Any))
+              (reduce (fn [acc :- (Set (Vec Any)) sb :- (Map String Any)] :- (Set (Vec Any))
+                        (conj acc (ground-head hargs sb)))
+                      #{} substs)]
+        {:ok (vec tuples)}))))
+
+;; ---- structural integrity (kernel-level; NOT lifecycle) --------------------
+(defn all-violations [idx :- ck/Index] :- (Vec String)
+  (vec (mapcat (fn [te :- String] :- (Vec String)
+                 (mapv (fn [v :- String] :- String (str (subs te 1) ": " v))
+                       (ck/violations-i idx te)))
+               (ck/thread-ids-i idx))))
+
+;; ---- node-name allocation helpers (read the store's existing `name` claims) -----
+;; next free @<mod>#<int> for a module: 1 + max existing int (so a mint never collides).
+(defn next-module-int [st :- (Atom t/Store) module :- String] :- Int
+  (let [NAME :- Int? (c/value-id st "name")
+        pfx  :- String (str "@" module "#")
+        mx   :- Int
+          (if (some? NAME)
+            (let [nameid :- Int NAME]
+              (reduce (fn [acc :- Int cid :- Int] :- Int
+                        (let [rid :- Int? (c/claim-r st cid)
+                              nm  :- Any (if (some? rid) (c/literal st rid) nil)]
+                          (if (string? nm)
+                            (let [snm :- String nm]
+                              (if (str/starts-with? snm pfx)
+                                (let [mm :- (U (Vec String) Nil) (re-matches #"@[^#]+#(\d+)" snm)]
+                                  (if (some? mm) (max acc (let [d :- Int (or (parse-long (nth mm 1)) 0)] d)) acc))
+                                acc))
+                            acc)))
+                      0 (c/by-p st nameid)))
+            0)]
+    (inc mx)))
+
+;; the GLOBAL max name-int over the whole store — seeds the serialized name allocator.
+(defn global-max-name-int [st :- (Atom t/Store)] :- Int
+  (let [NAME :- Int? (c/value-id st "name")]
+    (if (some? NAME)
+      (let [nameid :- Int NAME]
+        (reduce (fn [acc :- Int cid :- Int] :- Int
+                  (let [rid :- Int? (c/claim-r st cid)
+                        nm  :- Any (if (some? rid) (c/literal st rid) nil)]
+                    (if (string? nm)
+                      (let [snm :- String nm
+                            mm :- (U (Vec String) Nil) (re-matches #"@[^#]+#(\d+)" snm)]
+                        (if (some? mm) (max acc (let [d :- Int (or (parse-long (nth mm 1)) 0)] d)) acc))
+                      acc)))
+                0 (c/by-p st nameid)))
+      0)))
+
+;; node-ids whose @<mod># name-prefix is in `mods` — the subject scope for a scoped
+;; strip / the resolver's module-set walk. Off the store's `name` claims.
+(defn module-node-ids [st :- (Atom t/Store) mods :- (Set String)] :- (U (Set Int) Nil)
+  (let [NAME :- Int? (c/value-id st "name")]
+    (if (some? NAME)
+      (let [nameid :- Int NAME]
+        (set (keep (fn [cid :- Int] :- Int?
+                     (let [rid :- Int? (c/claim-r st cid)
+                           lid :- Int? (c/claim-l st cid)
+                           nm  :- Any (if (some? rid) (c/literal st rid) nil)
+                           m   :- String? (module-of-name nm)]
+                       (if (and (some? m) (some? lid) (contains? mods (let [ms :- String m] ms)))
+                         lid
+                         nil)))
+                   (c/by-p st nameid))))
+      nil)))
+
+;; node's root-down structural slot path from a parent-slot index {child -> [parent slot]}.
+(defn node-path [psi :- (Map Int Any) node :- Int] :- (Vec Any)
+  (loop [n :- Int node acc :- (Vec Any) []]
+    (let [pr :- Any (get psi n)]
+      (if (some? pr)
+        (let [prv  :- (Vec Any) pr
+              par  :- Int (nth prv 0)
+              slot :- Any (nth prv 1)]
+          (recur par (conj acc slot)))
+        (vec (reverse acc))))))
