@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# fram-build-code <module> [code-log] — compile a module STRAIGHT FROM THE CLAIM LOG, no .bclj text.
+# (L2 datum-IR, the live fram side of #33): the claim log's @<mod>#n claims are reversed to the
+# --emit-edn int-id shape (the SOCRATES-validated contract: leading `@file <path>` + `[id "pred" obj]`,
+# root = the (beagle-file …) wrapper), then handed to `beagle build --build-edn` (beagle 01ff75e),
+# which datum->syntax->compiles with NO text round-trip. Reverses fram-ingest-code's int->@mod#n re-key.
+set -euo pipefail
+MODULE="${1:?usage: fram-build-code <module> [code-log]}"
+LOG="${2:-.fram/code.log}"
+BEAGLE="${BEAGLE_HOME:-$HOME/code/beagle}"
+TMP="$(mktemp --suffix=.edn)"
+trap 'rm -f "$TMP"' EXIT
+bb -e '
+(require (quote [clojure.edn :as edn]) (quote [clojure.string :as str]))
+(let [[module log] *command-line-args*
+      pfx    (str "@" module "#")
+      claims (with-open [r (clojure.java.io/reader log)]
+               (->> (line-seq r) (remove str/blank?) (map edn/read-string)
+                    (filter (fn [m] (and (string? (:l m)) (str/starts-with? (:l m) pfx))))
+                    doall))
+      ->int  (fn [s] (when (string? s)
+                       (when-let [m (re-matches #"@[^#]+#(\d+)" s)] (parse-long (second m)))))
+      fpath  (some (fn [m] (when (= "file" (:p m)) (:r m))) claims)]
+  (when fpath (println (str "@file " fpath)))            ; --emit-edn header -> #:source-path
+  (doseq [c claims]
+    (when-let [lid (->int (:l c))]                       ; skip @mod#root bookkeeping (no int)
+      (let [r (:r c) ri (->int r)]                       ; ref obj -> int child-id; literal stays
+        (println (pr-str [lid (:p c) (or ri r)]))))))' "$MODULE" "$LOG" > "$TMP"
+echo "fram-build-code: $MODULE -> $(grep -c '^\[' "$TMP") triples from $LOG (claim log, no .bclj text)"
+"$BEAGLE/bin/beagle" build "$TMP" --build-edn
