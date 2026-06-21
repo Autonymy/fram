@@ -62,10 +62,13 @@ Flat line vs rising line = **identity-addressed incremental edit path** vs **who
 reload + revalidate + rewrite per edit**. That is the substrate thesis in one picture.
 
 ## The mechanism (PINNED, not inferred from two points)
-- **zerolang per patch is O(N):** `zero patch` is a stateless CLI invocation that (1) loads the whole
-  `zero.graph` artifact, (2) applies the op, (3) **validates the whole graph** —
-  `native/zero-c/src/program_graph_patch.c:986` `z_program_graph_validate(graph, &validation)` — and
-  (4) writes the whole graph back. All four are O(graph size); over an N-edit build that is O(N²).
+- **zerolang per patch is O(N):** `zero patch` is a stateless CLI invocation that (1) **loads the
+  whole `zero.graph`** (`program_graph_store.c:1425` `z_program_graph_store_load_path` — parses the
+  whole store), (2) applies the op, (3) **validates the whole graph** (`program_graph_patch.c:986`
+  `z_program_graph_validate`), and (4) **rewrites the whole store** (`program_graph_store.c:1508`
+  `z_program_graph_store_write_path`). Each step is O(graph size), **each pinned to a function** (not
+  inferred from the curve); over an N-edit build that is O(N²) — and the load+rewrite **alone** make
+  it O(N)/edit even if validation were constant.
   Confirmed independently by the per-op curve (rising) and the standalone scale probe (16 ms @ N=20 →
   50 ms @ N=240 → ~97 ms @ N=500). Still hedged as **"O(N²)-shaped"** (curve + source mechanism;
   no formal regression fit) — do not write a bare "O(N²)".
@@ -118,7 +121,8 @@ was re-run AFTER the changes:
 - `cnf_edit_min_correctness` **3/3 PASS** · `cnf_edit_min_commute` **GATE 2 PASS** ·
   `cnf_edit_min_rename` **PASS** · `cnf_rename_race_receipt` **PASS** (OCC under race + identity
   capture; the riskiest for `current-seq`) · `cnf_crdt_coupled_receipt` **PASS** ·
-  `cnf_code_flip_test` keystones **PASS** (KEYSTONE-A render(log)==render(text) **byte-identical**,
+  `cnf_code_flip_test` keystones **PASS** (KEYSTONE-A render(log)==render(text) **byte-identical to
+  each other** — neither equals the hand-authored committed bytes, which predate the canonicalizer,
   KEYSTONE-B/C recompile + commit + present).
 - **One pre-existing failure, attributed by baseline diff:** `cnf_code_flip_test` GATE 3 INGEST
   (`emit-edn(schema) re-keyed == warm-store AST, symdiff 0`) FAILS — but it **fails identically on
