@@ -1,6 +1,9 @@
 (ns fram.coord-resolver
   (:require [fram.types :as t]
             [fram.cnf :as c]
+            [fram.schema :as s]
+            [clojure.string :as str]
+            [clojure.set :as set]
             [fram.coord-daemon :as cd]
             [resolve :as r]))
 
@@ -13,9 +16,6 @@
   (reduce-kv (fn [acc k cids] (let [kept (vec (remove (fn [c] (contains? victims c)) cids))]
   (if (empty? kept) acc (assoc acc k kept)))) (let [e {}]
   e) m))
-
-(defn- dissoc-all [m victims]
-  (reduce (fn [mm v] (dissoc mm v)) m victims))
 
 (defn strip-resolve-claims! [ctx subj-keep?]
   (let [s (deref ctx)
@@ -138,3 +138,76 @@
 (defn invalidate-corpus-groups! []
   (reset! cd/corpus-groups (let [x nil]
   x)))
+
+(defn- render-ref-name [L]
+  (let [ctx r/ctx
+   FIXED r/FIXED
+   nm (r/binding-name (or (r/refers-target L) 0))
+   cpfx (r/pred-val L "ctor_prefix")
+   afield (r/pred-val L "accessor_field")
+   qual (r/pred-val L "qualifier")
+   fixed? (not (empty? (c/by-lp ctx L FIXED)))]
+  (cond
+  fixed? (r/sym-val L)
+  (some? cpfx) (str cpfx nm)
+  (some? afield) (str (str/lower-case (let [ns nm]
+  ns)) "-" afield)
+  (some? qual) (str qual "/" nm)
+  :else nm)))
+
+(defn target-node [req]
+  (let [co0 (deref cd/co)
+   st (:store co0)]
+  (cond
+  (some? (:te req)) (let [n (s/resolve-name st (let [te (:te req)]
+  te))]
+  (if (some? n) (let [u (with-resolve-read* st (fn [] (r/ultimate n)))]
+  (let [ui u]
+  ui)) nil))
+  (and (some? (:module req)) (some? (:name req))) (let [b (with-resolve-read* st (fn [] (r/def-binding (:module req) (:name req))))]
+  (let [bi b]
+  bi))
+  :else nil)))
+
+(defn callers-of-in-store [st B]
+  (if (some? B) (let [bb B]
+  (with-resolve-read* st (fn [] (let [ctx r/ctx
+   REFERS r/REFERS]
+  (set (keep (fn [cid] (let [cl (c/claim-of ctx cid)
+   L (:l cl)]
+  (if (= bb (r/ultimate (:r cl))) [(r/name->module (s/name-of ctx L)) (render-ref-name L)] nil))) (c/by-p ctx REFERS))))))) (let [e #{}]
+  e)))
+
+(defn- parent-slot-index [st]
+  (let [m (deref st)]
+  (reduce (fn [acc e] (let [cl (nth e 1)
+   rr (:r cl)
+   pstr (c/literal st (let [pid (:p cl)]
+  pid))]
+  (if (and (integer? rr) (string? pstr) (let [ps pstr]
+  (or (boolean (r/ord-pos? ps)) (some? (re-matches #"seg\d+" ps)) (some? (re-matches #"comment\d+" ps)) (= ps "tail")))) (assoc acc (let [r2 rr]
+  r2) [(:l cl) pstr]) acc))) (let [e0 {}]
+  e0) (vec (let [cm (:claims m)]
+  cm)))))
+
+(defn refers-keyset [st]
+  (with-resolve-read* st (fn [] (let [ctx r/ctx
+   REFERS r/REFERS
+   psi (parent-slot-index st)]
+  (set (keep (fn [cid] (let [cl (c/claim-of ctx cid)
+   L (:l cl)
+   D (r/ultimate (:r cl))]
+  [(r/name->module (s/name-of ctx L)) (render-ref-name L) (cd/node-path psi L) (r/name->module (s/name-of ctx (let [dd D]
+  dd))) (r/binding-name (let [d2 D]
+  d2))])) (c/by-p ctx REFERS)))))))
+
+(defn refers-keyset-resp! []
+  (let [co0 (deref cd/co)
+   st (:store co0)
+   scoped (refers-keyset st)
+   clone (atom (deref st))
+   _strip (strip-resolve-claims! clone nil)
+   _walk (r/resolve-warm-store! clone)
+   ground (refers-keyset clone)
+   symdiff (set/union (set/difference scoped ground) (set/difference ground scoped))]
+  {:scoped-size (count scoped) :ground-size (count ground) :symdiff-size (count symdiff) :symdiff (vec (take 40 symdiff)) :version (cd/cur-seq)}))

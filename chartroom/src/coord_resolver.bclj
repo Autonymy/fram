@@ -12,7 +12,10 @@
 (define-mode strict)
 (require fram.types :as t)
 (require fram.cnf :as c)
-(require fram.coord-daemon :as cd)   ; daemon state (co/dirty-modules/export-snapshot/...) + module-node-ids
+(require fram.schema :as s)
+(require clojure.string :as str)
+(require clojure.set :as set)
+(require fram.coord-daemon :as cd)   ; daemon state (co/dirty-modules/export-snapshot/...) + module-node-ids + node-path
 (require resolve :as r)              ; the lexical resolver (chartroom/src/resolve.bclj, ns `resolve`)
 
 ;; remove every victim cid from an index's cid-vectors, dropping keys whose vec empties
@@ -29,9 +32,6 @@
                (let [kept :- (Vec Int) (vec (remove (fn [c :- Int] :- Bool (contains? victims c)) cids))]
                  (if (empty? kept) acc (assoc acc k kept))))
              (let [e :- (Map (Vec Int) (Vec Int)) {}] e) m))
-
-(defn- dissoc-all [m :- (Map Int Any) victims :- (Set Int)] :- (Map Int Any)
-  (reduce (fn [mm :- (Map Int Any) v :- Int] :- (Map Int Any) (dissoc mm v)) m victims))
 
 ;; strip EVERY live resolve-pred claim (refers_to + render markers) from the store's
 ;; claims + tx-of + objects + superseded + all five indexes. subj-keep? nil => strip all
@@ -213,3 +213,104 @@
   (deref cd/corpus-groups))
 
 (defn invalidate-corpus-groups! [] :- Any (reset! cd/corpus-groups (let [x :- Any nil] x)))
+
+;; ---- CUT 3a: resolver-woven READ handlers (:callers / :refers-keyset / target) ----
+;; rendered name for a referencing leaf L (binding-name + ctor/qualifier/accessor/keep_spelling
+;; markers) — byte-identical to extract-file!'s spelling. Call INSIDE with-resolve-read* (reads r/*).
+(defn- render-ref-name [L :- Int] :- Any
+  (let [ctx    :- (Atom t/Store) r/ctx
+        FIXED  :- Int r/FIXED
+        nm     :- Any (r/binding-name (or (r/refers-target L) 0))   ; refers-target is Int? (always set for a ref leaf); or-0 coerces
+        cpfx   :- Any (r/pred-val L "ctor_prefix")
+        afield :- Any (r/pred-val L "accessor_field")
+        qual   :- Any (r/pred-val L "qualifier")
+        fixed? :- Bool (not (empty? (c/by-lp ctx L FIXED)))]
+    (cond
+      [fixed?          (r/sym-val L)]
+      [(some? cpfx)    (str cpfx nm)]
+      [(some? afield)  (str (str/lower-case (let [ns :- String nm] ns)) "-" afield)]
+      [(some? qual)    (str qual "/" nm)]
+      [:else           nm])))
+
+;; resolve a target spec to its binding node-id: "@mod#id" -> ultimate(binding); {module name} -> def-binding.
+(defn target-node [req :- (Map Keyword Any)] :- Int?
+  (let [co0 :- Any (deref cd/co)
+        st  :- (Atom t/Store) (:store co0)]
+    (cond
+      [(some? (:te req))
+       (let [n :- Int? (s/resolve-name st (let [te :- String (:te req)] te))]
+         (if (some? n)
+           (let [u :- Any (with-resolve-read* st (fn [] :- Any (r/ultimate n)))] (let [ui :- Int? u] ui))
+           nil))]
+      [(and (some? (:module req)) (some? (:name req)))
+       (let [b :- Any (with-resolve-read* st (fn [] :- Any (r/def-binding (:module req) (:name req))))]
+         (let [bi :- Int? b] bi))]
+      [:else nil])))
+
+;; callers-of(B): set of [module rendered-name] for every referencing leaf whose refers_to
+;; (chased via ultimate) lands on B. Pure read over the warm store (refers_to materialized).
+(defn callers-of-in-store [st :- (Atom t/Store) B :- Int?] :- (Set (Vec Any))
+  (if (some? B)
+    (let [bb :- Int B]
+      (with-resolve-read* st
+        (fn [] :- (Set (Vec Any))
+          (let [ctx    :- (Atom t/Store) r/ctx
+                REFERS :- Int r/REFERS]
+            (set (keep (fn [cid :- Int] :- (U (Vec Any) Nil)
+                         (let [cl :- (Map Keyword Any) (c/claim-of ctx cid)
+                               L  :- Int (:l cl)]
+                           (if (= bb (r/ultimate (:r cl)))
+                             [(r/name->module (s/name-of ctx L)) (render-ref-name L)]
+                             nil)))
+                       (c/by-p ctx REFERS)))))))
+    (let [e :- (Set (Vec Any)) #{}] e)))
+
+;; {child-node -> [parent-node slot]} over the store's structural edges (fN/segN/commentN/tail),
+;; skipping `child` (duplicates fN). id-free slot strings; stable across re-resolve.
+(defn- parent-slot-index [st :- (Atom t/Store)] :- (Map Int Any)
+  (let [m :- t/Store (deref st)]
+    (reduce (fn [acc :- (Map Int Any) e :- Any] :- (Map Int Any)
+              (let [cl   :- (Map Keyword Any) (nth e 1)
+                    rr   :- Any (:r cl)
+                    pstr :- Any (c/literal st (let [pid :- Int (:p cl)] pid))]
+                (if (and (integer? rr) (string? pstr)
+                         (let [ps :- String pstr]
+                           (or (boolean (r/ord-pos? ps)) (some? (re-matches #"seg\d+" ps))
+                               (some? (re-matches #"comment\d+" ps)) (= ps "tail"))))
+                  (assoc acc (let [r2 :- Int rr] r2) [(:l cl) pstr])
+                  acc)))
+            (let [e0 :- (Map Int Any) {}] e0)
+            (vec (let [cm :- (Map Int (Map Keyword Any)) (:claims m)] cm)))))
+
+;; the STABLE id-free keyset of materialized refers_to edges (one per edge): [ref-module
+;; rendered-name structural-path target-module target-ultimate-name]. Pure read.
+(defn refers-keyset [st :- (Atom t/Store)] :- (Set (Vec Any))
+  (with-resolve-read* st
+    (fn [] :- (Set (Vec Any))
+      (let [ctx    :- (Atom t/Store) r/ctx
+            REFERS :- Int r/REFERS
+            psi    :- (Map Int Any) (parent-slot-index st)]
+        (set (keep (fn [cid :- Int] :- (U (Vec Any) Nil)
+                     (let [cl :- (Map Keyword Any) (c/claim-of ctx cid)
+                           L  :- Int (:l cl)
+                           D  :- Any (r/ultimate (:r cl))]
+                       [(r/name->module (s/name-of ctx L))
+                        (render-ref-name L)
+                        (cd/node-path psi L)
+                        (r/name->module (s/name-of ctx (let [dd :- Int D] dd)))
+                        (r/binding-name (let [d2 :- Int D] d2))]))
+                   (c/by-p ctx REFERS)))))))
+
+;; gate: scoped keyset (off `co`) vs a fresh WHOLE-CORPUS rebuild over a CLONE. symdiff 0 <=> scoped==truth.
+(defn refers-keyset-resp! [] :- (Map Keyword Any)
+  (let [co0    :- Any (deref cd/co)
+        st     :- (Atom t/Store) (:store co0)
+        scoped :- (Set (Vec Any)) (refers-keyset st)
+        clone  :- (Atom t/Store) (atom (deref st))
+        _strip :- Any (strip-resolve-claims! clone nil)
+        _walk  :- Any (r/resolve-warm-store! clone)
+        ground :- (Set (Vec Any)) (refers-keyset clone)
+        symdiff :- (Set Any) (set/union (set/difference scoped ground) (set/difference ground scoped))]
+    {:scoped-size (count scoped) :ground-size (count ground)
+     :symdiff-size (count symdiff) :symdiff (vec (take 40 symdiff))
+     :version (cd/cur-seq)}))
