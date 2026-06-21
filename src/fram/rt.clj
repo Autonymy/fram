@@ -340,6 +340,41 @@
 (defn read-lines [path]                                     ; all lines of a file as a vector
   (with-open [r (io/reader path)] (vec (line-seq r))))
 
+;; --- daemon host seam (the host-interop cnf_coord_daemon's .bclj declares-extern) ---
+;; The flat-log writer, the external-edit stamp, EDN print, and subscriber delivery.
+;; The Beagle daemon (fram.coord-daemon) holds the LOGIC + state; these are the genuine
+;; host calls (FileOutputStream/fsync, java.io.File, a single-thread executor).
+(defn pr-edn [x] (pr-str x))                                ; EDN-print one value
+(defn file-stamp [f]                                        ; lastModified:length — detect an external flat edit
+  (let [fi (java.io.File. (str f))] (str (.lastModified fi) ":" (.length fi))))
+(defn write-flat-lines! [path lines]                        ; append lines + ONE fsync (durable-before-ack)
+  (with-open [os (java.io.FileOutputStream. (str path) true)]
+    (doseq [^String ln lines] (.write os (.getBytes ln "UTF-8")))
+    (.flush os)
+    (.force (.getChannel os) true))
+  nil)
+;; subscriber delivery is BEST-EFFORT + OFF the write path (a single-threaded executor):
+;; a writer whose write/flush throws is dropped; single thread keeps events ordered. rt
+;; OWNS the registry so the Beagle do-assert!/do-retract! just fire (rt/notify-subs! event);
+;; the daemon shim registers sockets via (rt/subscribe! writer). (Scoped filter = later add.)
+(defonce ^:private subscribers (atom []))
+(defonce ^:private notify-exec
+  (java.util.concurrent.Executors/newSingleThreadExecutor
+    (reify java.util.concurrent.ThreadFactory
+      (newThread [_ r] (doto (Thread. r "cnf-notify") (.setDaemon true))))))
+(defn subscribe! [w] (swap! subscribers conj w) nil)        ; register a long-lived subscriber writer
+(defn subscriber-count [] (count @subscribers))
+(defn notify-subs! [event]
+  (let [line (str (pr-str event) "\n")]
+    (.execute notify-exec
+      (fn [] (reset! subscribers
+                     (vec (filter (fn [w]
+                                    (try (.write ^java.io.BufferedWriter w line)
+                                         (.flush ^java.io.BufferedWriter w) true
+                                         (catch Throwable _ false)))
+                                  @subscribers))))))
+  nil)
+
 ;; --- resolver host seam (the host-interop chartroom.resolve declares-extern) ---
 ;; Genuine host calls only — exit / diagnostics / format / timing. (Regex, edn,
 ;; parse-long, split-lines were de-warted to native Beagle: regex literals +

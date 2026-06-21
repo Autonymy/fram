@@ -4,7 +4,10 @@
             [fram.schema :as s]
             [fram.kernel :as ck]
             [fram.query :as q]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [clojure.set :as set]
+            [fram.cnf-coord :as cc]
+            [fram.rt :as rt]))
 
 (defrecord Idx [triples by-pr by-lp])
 
@@ -206,3 +209,150 @@
    par (nth prv 0)
    slot (nth prv 1)]
   (recur par (conj acc slot))) (vec (reverse acc))))))
+
+(def co (atom (let [x nil]
+  x)))
+
+(def flat-log (atom (let [x nil]
+  x)))
+
+(def cache (atom (let [x {:index nil :version -1}]
+  x)))
+
+(def flat-mtime (atom (let [x nil]
+  x)))
+
+(def flat-canonical? (atom false))
+
+(def refers-version (atom -1))
+
+(def dirty-modules (atom (let [x #{}]
+  x)))
+
+(def export-snapshot (atom (let [x {}]
+  x)))
+
+(def materialized? (atom false))
+
+(def last-materialize (atom (let [x nil]
+  x)))
+
+(def corpus-groups (atom (let [x nil]
+  x)))
+
+(def node-name-seq (atom 0))
+
+(def ^:dynamic *flat-batch* nil)
+
+(defn cur-seq []
+  (cc/current-seq (let [c (deref co)]
+  c)))
+
+(defn mark-dirty! [^String te]
+  (let [m (module-of-name te)]
+  (if (some? m) (swap! dirty-modules (fn [s] (conj s (let [ms m]
+  ms)))) nil)))
+
+(defn reset-refers-state! []
+  (reset! dirty-modules (let [x #{}]
+  x))
+  (reset! export-snapshot (let [x {}]
+  x))
+  (reset! materialized? false)
+  (reset! refers-version -1)
+  (reset! last-materialize (let [x nil]
+  x))
+  (reset! corpus-groups (let [x nil]
+  x)))
+
+(defn ^String flat-line [^String op ^String te ^String p r sq]
+  (str (rt/pr-edn {:tx sq :op op :l te :p p :r r :ts (rt/now-ts) :by "coord"}) "\n"))
+
+(defn write-lines! [lines]
+  (let [lg (deref flat-log)]
+  (if (and (some? lg) (not (empty? lines))) (let [path lg]
+  (rt/write-flat-lines! path lines)
+  (reset! flat-mtime (let [x (rt/file-stamp path)]
+  x))) nil)))
+
+(defn append-flat! [^String op ^String te ^String p r sq]
+  (if (some? *flat-batch*) (swap! (let [a *flat-batch*]
+  a) (fn [v] (conj v (flat-line op te p r sq)))) (write-lines! [(flat-line op te p r sq)])))
+
+(defn flush-flat-batch! []
+  (if (some? *flat-batch*) (let [a *flat-batch*
+   lines (deref a)]
+  (write-lines! lines)
+  (reset! a (let [x []]
+  x))) nil))
+
+(defn warm! []
+  (let [v (cur-seq)]
+  (if (not= v (:version (deref cache))) (let [claims (reified->claims (deref co))]
+  (reset! cache (let [m {:claims (set claims) :idx (idx-build claims) :index nil :version v}]
+  m))) nil)
+  (deref cache)))
+
+(defn index! []
+  (let [c (warm!)
+   ix (:index c)]
+  (if (some? ix) (let [i ix]
+  i) (let [built (ck/build-index (vec (let [cl (:claims c)]
+  cl)))]
+  (swap! cache (fn [m] (assoc m :index built)))
+  built))))
+
+(defn warm-claims []
+  (vec (let [cl (:claims (warm!))]
+  cl)))
+
+(defn ^Idx warm-idx []
+  (let [ix (:idx (warm!))]
+  ix))
+
+(defn apply-commit-delta! [pre ^String te ^String p]
+  (let [post (cur-seq)]
+  (if (> post pre) (swap! cache (fn [c] (if (= (:version c) pre) (let [oldidx (:idx c)
+   old-g (get (:by-lp oldidx) [te p] #{})
+   new-g (lp-live-triples (deref co) te p)
+   to-del (set/difference old-g new-g)
+   to-add (set/difference new-g old-g)
+   idx1 (reduce idx-del oldidx (vec to-del))
+   idx2 (reduce idx-add idx1 (vec to-add))
+   cl0 (:claims c)
+   cl1 (reduce (fn [s tr] (disj s (ck/->Claim (nth tr 0) (nth tr 1) (nth tr 2)))) cl0 (vec to-del))
+   cl2 (reduce (fn [s tr] (conj s (ck/->Claim (nth tr 0) (nth tr 1) (nth tr 2)))) cl1 (vec to-add))]
+  (let [out {:claims cl2 :idx idx2 :index nil :version post}]
+  out)) (assoc c :version -1)))) nil)))
+
+(defn do-assert! [^String te ^String p r base]
+  (if (contains? schema-preds p) {:reject [(str "reserved predicate '" p "' (engine-internal; use a domain predicate)")] :version (cur-seq)} (let [pre (cur-seq)
+   res (cc/commit! (let [c (deref co)]
+  c) "coord" te p (kind-of r) r base)
+   okv (:ok res)]
+  (if (some? okv) (let [ok okv]
+  (if (not= (:idempotent res) true) (do
+  (append-flat! "assert" te p r ok)
+  (apply-commit-delta! pre te p)
+  (mark-dirty! te)) nil)
+  (rt/notify-subs! {:event :commit :version ok :op "assert" :l te :p p :r r})
+  {:ok ok}) {:reject (:reject res) :version (:version res)}))))
+
+(defn do-retract! [^String te ^String p r base]
+  (if (contains? schema-preds p) {:reject [(str "reserved predicate '" p "'")] :version (cur-seq)} (let [pre (cur-seq)
+   res (cc/retract! (let [c (deref co)]
+  c) "coord" te p r base)
+   okv (:ok res)]
+  (if (some? okv) (let [ok okv]
+  (append-flat! "retract" te p r ok)
+  (apply-commit-delta! pre te p)
+  (mark-dirty! te)
+  (rt/notify-subs! {:event :commit :version ok :op "retract" :l te :p p :r r})
+  {:ok ok}) {:reject (:reject res) :version (:version res)}))))
+
+(defn seed-name-seq! [st]
+  (reset! node-name-seq (global-max-name-int st)))
+
+(defn reserve-name-ints! [n]
+  (let [hi (swap! node-name-seq (fn [v] (+ v n)))]
+  (vec (range (inc (- hi n)) (inc hi)))))

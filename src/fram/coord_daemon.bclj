@@ -32,6 +32,16 @@
 (require fram.kernel :as ck)
 (require fram.query :as q)
 (require clojure.string :as str)
+(require clojure.set :as set)
+(require fram.cnf-coord :as cc)   ; the reified coordinator (commit!/retract!/current-seq), Beagle
+(require fram.rt :as rt)          ; the host floor the cut-2 interop externs bind to
+
+;; --- host seam (cut 2 atom-orchestration: the irreducible non-Beagle floor; impl in fram.rt) ---
+(declare-extern fram.rt/now-ts [-> String])                              ; commit timestamp (flat-log line)
+(declare-extern fram.rt/pr-edn [Any -> String])                          ; EDN-print one value
+(declare-extern fram.rt/file-stamp [String -> String])                   ; lastModified:length (external-edit detect)
+(declare-extern fram.rt/write-flat-lines! [String (Vec String) -> Nil])  ; append lines + ONE fsync
+(declare-extern fram.rt/notify-subs! [Any -> Nil])                       ; best-effort subscriber delivery (rt owns the registry)
 
 ;; The warm read index: the triple SET + two regroupings (by-[p r] for the datalog
 ;; probe, by-[l p] to scope a write's delta to its (l,p) group). A typed record (the
@@ -359,3 +369,163 @@
               slot :- Any (nth prv 1)]
           (recur par (conj acc slot)))
         (vec (reverse acc))))))
+
+;; ============================================================================
+;; CUT 2 — atom-orchestration: the daemon's mutable state + warm cache + writes.
+;; ============================================================================
+;; Daemon singletons (one reified coordinator + a version-cached read index). A
+;; top-level atom's element type is inferred from its init, so heterogeneous /
+;; nullable handles are (Atom Any) and precise counters are (Atom Int)/(Atom Bool).
+(def co :- (Atom Any) (atom (let [x :- Any nil] x)))                  ; the Coord (or migrate map) | nil
+(def flat-log :- (Atom Any) (atom (let [x :- Any nil] x)))           ; canonical flat-log path | nil
+(def cache :- (Atom (Map Keyword Any)) (atom (let [x :- (Map Keyword Any) {:index nil :version -1}] x)))
+(def flat-mtime :- (Atom Any) (atom (let [x :- Any nil] x)))         ; last-seen flat stamp | nil
+(def flat-canonical? :- (Atom Bool) (atom false))
+(def refers-version :- (Atom Int) (atom -1))
+(def dirty-modules :- (Atom (Set String)) (atom (let [x :- (Set String) #{}] x)))
+(def export-snapshot :- (Atom (Map String Any)) (atom (let [x :- (Map String Any) {}] x)))
+(def materialized? :- (Atom Bool) (atom false))
+(def last-materialize :- (Atom Any) (atom (let [x :- Any nil] x)))
+(def corpus-groups :- (Atom Any) (atom (let [x :- Any nil] x)))
+(def node-name-seq :- (Atom Int) (atom 0))
+
+;; commit-batch: the flat-log lines of ONE commit, flushed+fsync'd once (1 fsync per
+;; commit, not per claim). nil => write each line immediately (single-op callers).
+(def ^:dynamic *flat-batch* :- Any nil)
+
+;; current coordinator version (O(1)); @co is the Coord handle (narrowed).
+(defn cur-seq [] :- Int (cc/current-seq (let [c :- cc/Coord (deref co)] c)))
+
+;; record that a commit touched te's module (S3.3 scoped re-resolve); skip non-AST te.
+(defn mark-dirty! [te :- String] :- Any
+  (let [m :- String? (module-of-name te)]
+    (if (some? m)
+      (swap! dirty-modules (fn [s :- (Set String)] :- (Set String) (conj s (let [ms :- String m] ms))))
+      nil)))
+
+;; reset all S3.3 derived state — called when `co` is rebuilt wholesale (boot / reload).
+(defn reset-refers-state! [] :- Any
+  (reset! dirty-modules (let [x :- (Set String) #{}] x))
+  (reset! export-snapshot (let [x :- (Map String Any) {}] x))
+  (reset! materialized? false)
+  (reset! refers-version -1)
+  (reset! last-materialize (let [x :- Any nil] x))
+  (reset! corpus-groups (let [x :- Any nil] x)))
+
+;; ---- flat-log projection: each reified commit appends the flat (l p r) line -----
+(defn flat-line [op :- String te :- String p :- String r :- Any sq :- Int] :- String
+  (str (rt/pr-edn {:tx sq :op op :l te :p p :r r :ts (rt/now-ts) :by "coord"}) "\n"))
+
+;; write lines + ONE fsync, then refresh flat-mtime so our OWN write isn't read as external.
+(defn write-lines! [lines :- (Vec String)] :- Any
+  (let [lg :- Any (deref flat-log)]
+    (if (and (some? lg) (not (empty? lines)))
+      (let [path :- String lg]
+        (rt/write-flat-lines! path lines)
+        (reset! flat-mtime (let [x :- Any (rt/file-stamp path)] x)))  ; flat-mtime is (Atom Any); widen
+      nil)))
+
+;; append a flat line: defer into *flat-batch* if bound, else write+fsync immediately.
+(defn append-flat! [op :- String te :- String p :- String r :- Any sq :- Int] :- Any
+  (if (some? *flat-batch*)
+    (swap! (let [a :- (Atom Any) *flat-batch*] a)
+           (fn [v :- (Vec String)] :- (Vec String) (conj v (flat-line op te p r sq))))
+    (write-lines! [(flat-line op te p r sq)])))
+
+;; flush the batch with ONE fsync at commit end (PROF instrumentation dropped — debug-only).
+(defn flush-flat-batch! [] :- Any
+  (if (some? *flat-batch*)
+    (let [a :- (Atom Any) *flat-batch*
+          lines :- (Vec String) (deref a)]
+      (write-lines! lines)
+      (reset! a (let [x :- Any []] x)))   ; *flat-batch* deref is (Atom Any); widen
+    nil))
+
+;; ---- warm read cache (consistent under writes: whole-rebuild on divergence, ----
+;;      O(1) incremental delta-apply on each in-lockstep commit). -----------------
+(defn warm! [] :- (Map Keyword Any)
+  (let [v :- Int (cur-seq)]
+    (if (not= v (:version (deref cache)))
+      (let [claims :- (Vec ck/Claim) (reified->claims (deref co))]
+        (reset! cache (let [m :- (Map Keyword Any)
+                            {:claims (set claims) :idx (idx-build claims) :index nil :version v}] m)))
+      nil)
+    (deref cache)))
+
+(defn index! [] :- ck/Index
+  (let [c :- (Map Keyword Any) (warm!)
+        ix :- Any (:index c)]
+    (if (some? ix)
+      (let [i :- ck/Index ix] i)
+      (let [built :- ck/Index (ck/build-index (vec (let [cl :- (Set ck/Claim) (:claims c)] cl)))]
+        (swap! cache (fn [m :- (Map Keyword Any)] :- (Map Keyword Any) (assoc m :index built)))
+        built))))
+
+(defn warm-claims [] :- (Vec ck/Claim) (vec (let [cl :- (Set ck/Claim) (:claims (warm!))] cl)))
+(defn warm-idx [] :- Idx (let [ix :- Idx (:idx (warm!))] ix))
+
+;; apply a just-committed (te p) edit to the warm cache IFF it was current as of the
+;; pre-commit seq; else invalidate (next warm! whole-rebuilds). We GROUP-reconcile the
+;; (te,p) group against the store's authoritative live set — op-agnostic, O(group), not
+;; O(corpus). set/difference is Any-typed (stdlib), so the result is narrowed.
+(defn apply-commit-delta! [pre :- Int te :- String p :- String] :- Any
+  (let [post :- Int (cur-seq)]
+    (if (> post pre)
+      (swap! cache
+        (fn [c :- (Map Keyword Any)] :- (Map Keyword Any)
+          (if (= (:version c) pre)
+            (let [oldidx :- Idx (:idx c)
+                  old-g  :- (Set (Vec String)) (get (:by-lp oldidx) [te p] #{})
+                  new-g  :- (Set (Vec Any)) (lp-live-triples (deref co) te p)
+                  to-del :- (Set (Vec String)) (set/difference old-g new-g)
+                  to-add :- (Set (Vec String)) (set/difference new-g old-g)
+                  idx1   :- Idx (reduce idx-del oldidx (vec to-del))
+                  idx2   :- Idx (reduce idx-add idx1 (vec to-add))
+                  cl0    :- (Set ck/Claim) (:claims c)
+                  cl1    :- (Set ck/Claim) (reduce (fn [s :- (Set ck/Claim) tr :- (Vec String)] :- (Set ck/Claim)
+                                                     (disj s (ck/->Claim (nth tr 0) (nth tr 1) (nth tr 2)))) cl0 (vec to-del))
+                  cl2    :- (Set ck/Claim) (reduce (fn [s :- (Set ck/Claim) tr :- (Vec String)] :- (Set ck/Claim)
+                                                     (conj s (ck/->Claim (nth tr 0) (nth tr 1) (nth tr 2)))) cl1 (vec to-add))]
+              (let [out :- (Map Keyword Any) {:claims cl2 :idx idx2 :index nil :version post}] out))
+            (assoc c :version -1))))
+      nil)))
+
+;; ---- writes: reserved-predicate guard, commit through the reified coordinator, ----
+;;      flat-log append, warm-delta, dirty-mark, subscriber notify. -----------------
+(defn do-assert! [te :- String p :- String r :- Any base :- Int] :- (Map Keyword Any)
+  (if (contains? schema-preds p)
+    {:reject [(str "reserved predicate '" p "' (engine-internal; use a domain predicate)")] :version (cur-seq)}
+    (let [pre :- Int (cur-seq)
+          res :- (Map Keyword Any) (cc/commit! (let [c :- cc/Coord (deref co)] c) "coord" te p (kind-of r) r base)
+          okv :- Any (:ok res)]
+      (if (some? okv)
+        (let [ok :- Int okv]
+          (if (not= (:idempotent res) true)
+            (do (append-flat! "assert" te p r ok)
+                (apply-commit-delta! pre te p)
+                (mark-dirty! te))
+            nil)
+          (rt/notify-subs! {:event :commit :version ok :op "assert" :l te :p p :r r})
+          {:ok ok})
+        {:reject (:reject res) :version (:version res)}))))
+
+(defn do-retract! [te :- String p :- String r :- Any base :- Int] :- (Map Keyword Any)
+  (if (contains? schema-preds p)
+    {:reject [(str "reserved predicate '" p "'")] :version (cur-seq)}
+    (let [pre :- Int (cur-seq)
+          res :- (Map Keyword Any) (cc/retract! (let [c :- cc/Coord (deref co)] c) "coord" te p r base)
+          okv :- Any (:ok res)]
+      (if (some? okv)
+        (let [ok :- Int okv]
+          (append-flat! "retract" te p r ok)
+          (apply-commit-delta! pre te p)
+          (mark-dirty! te)
+          (rt/notify-subs! {:event :commit :version ok :op "retract" :l te :p p :r r})
+          {:ok ok})
+        {:reject (:reject res) :version (:version res)}))))
+
+;; ---- serialized node-name allocation (Build A: concurrent-safe @mod#int ranges) --
+(defn seed-name-seq! [st :- (Atom t/Store)] :- Any (reset! node-name-seq (global-max-name-int st)))
+(defn reserve-name-ints! [n :- Int] :- (Vec Int)
+  (let [hi :- Int (swap! node-name-seq (fn [v :- Int] :- Int (+ v n)))]
+    (vec (range (inc (- hi n)) (inc hi)))))
