@@ -343,6 +343,19 @@
 (defn delete-file [p] (when (.exists (io/file p)) (.delete (io/file p))) nil)
 (defn spit-append [p content] (spit p content :append true) nil)
 (defn getenv [nm] (System/getenv nm))
+
+;; --- coordinator host seam (the irreducible host-interop the .bclj coordinator declares-extern) ---
+(defn now-ms [] (System/currentTimeMillis))                 ; coordinator clock authority (lease expiry)
+(defn new-monitor [] (Object.))                             ; a fresh JVM monitor for the write lock
+(defn with-lock [mon thunk] (locking mon (thunk)))          ; serialize a thunk under the monitor
+(defn append-records-fsync! [path records]                  ; durable append: EDN-print each record + fsync
+  (with-open [os (java.io.FileOutputStream. (str path) true)]
+    (doseq [r records] (.write os (.getBytes (str (pr-str r) "\n") "UTF-8")))
+    (.flush os)
+    (.force (.getChannel os) true))
+  nil)
+(defn read-lines [path]                                     ; all lines of a file as a vector
+  (with-open [r (io/reader path)] (vec (line-seq r))))
 (defn filter-digits [s] (str/replace s #"[^0-9]" ""))
 (defn is-iso-datetime-19 [s]
   (boolean (and (= 19 (count s)) (re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}" s))))

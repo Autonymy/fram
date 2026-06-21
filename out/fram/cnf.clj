@@ -129,3 +129,58 @@
   (doseq [cid (:superseded data)]
   (swap! ctx update :superseded assoc cid true))
   ctx)
+
+(defn current-seq [ctx]
+  (let [s (deref ctx)]
+  (:next-seq s)))
+
+(defn next-id [ctx]
+  (let [s (deref ctx)]
+  (:next-id s)))
+
+(defn claim-l [ctx cid]
+  (let [m (claim-of ctx cid)]
+  (if (some? m) (:l m) nil)))
+
+(defn claim-p [ctx cid]
+  (let [m (claim-of ctx cid)]
+  (if (some? m) (:p m) nil)))
+
+(defn claim-r [ctx cid]
+  (let [m (claim-of ctx cid)]
+  (if (some? m) (:r m) nil)))
+
+(defn claim-lpr [ctx cid]
+  (let [m (claim-of ctx cid)]
+  (if (some? m) [(:l m) (:p m) (:r m)] [])))
+
+(defn records-since [ctx since txid]
+  (let [s (deref ctx)
+   valss (vec (:values s))
+   clmss (vec (:claims s))
+   objss (vec (keys (:objects s)))
+   vals (reduce (fn [acc e] (let [id (first e)]
+  (if (>= id since) (conj acc {:k :value :id id :v (nth e 1)}) acc))) [] valss)
+   ents (reduce (fn [acc id] (if (and (>= id since) (not (contains? (:values s) id)) (not (contains? (:claims s) id))) (conj acc {:k :entity :id id}) acc)) [] objss)
+   clms (reduce (fn [acc e] (let [cid (first e)
+   mm (nth e 1)]
+  (if (>= cid since) (conj acc {:k :claim :cid cid :l (:l mm) :p (:p mm) :r (:r mm) :tx (get (:tx-of s) cid)}) acc))) [] clmss)
+   txm (get (:txs s) txid)
+   txrec {:k :tx :tx txid :seq (if (some? txm) (:seq txm) 0) :agent (if (some? txm) (:agent txm) nil)}]
+  (vec (concat vals ents clms [txrec {:k :commit :tx txid}]))))
+
+(defn all-records [ctx]
+  (let [s (deref ctx)
+   valss (vec (:values s))
+   clmss (vec (:claims s))
+   txss (vec (:txs s))
+   objss (vec (keys (:objects s)))
+   vals (mapv (fn [e] {:k :value :id (first e) :v (nth e 1)}) valss)
+   ents (reduce (fn [acc id] (if (and (not (contains? (:values s) id)) (not (contains? (:claims s) id))) (conj acc {:k :entity :id id}) acc)) [] objss)
+   clms (mapv (fn [e] (let [cid (first e)
+   mm (nth e 1)]
+  {:k :claim :cid cid :l (:l mm) :p (:p mm) :r (:r mm) :tx (get (:tx-of s) cid)})) clmss)
+   txs (mapv (fn [e] (let [tx (first e)
+   tm (nth e 1)]
+  {:k :tx :tx tx :seq (:seq tm) :agent (:agent tm)})) txss)]
+  (vec (concat vals ents clms txs))))

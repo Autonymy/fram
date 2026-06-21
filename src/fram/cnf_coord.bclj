@@ -1,0 +1,340 @@
+#lang beagle/clj
+;; ============================================================================
+;; fram.cnf-coord — the coordinator on the REIFIED kernel, AUTHORED IN BEAGLE.
+;; ============================================================================
+;; Sole writer, serialized (one monitor). The proven skeleton (lock, optimistic
+;; base_version, rule-check, append+notify) over the typed store (fram.cnf +
+;; fram.schema). Self-hosting cut: the hand-written cnf_coord.clj (~311 lines of
+;; Clojure reaching into store internals) becomes this typed module calling the
+;; cnf API; the few store-internal reads (delta enumeration) live in cnf where
+;; t/Store is typed. The host seam (monitor, clock, fsync-append, line-read) is
+;; declared-extern against fram.rt — the irreducible non-Beagle floor.
+;;
+;; The six concurrency/durability holes the analysis flagged, all preserved:
+;;   1. base_version = max tx-seq over LIVE (l,p) claims; stale single write rejected.
+;;   2. acyclicity validate is a PURE pre-check (over resolved ids) BEFORE any mint.
+;;   3. single-subject obligations (depends_on/part_of acyclicity).
+;;   4. multi-valued idempotency: no-op when the live (l,p,r) already exists.
+;;   5. atomic v2 log: each tx's records + :commit, fsync'd; a torn tx is dropped.
+;;   6. file-import OCC: every write through the one monitor; base_version decides.
+;;
+;; Plus the exclusive-lease arm (mutual exclusion + fencing): acquire reads holder
+;; LIVENESS fresh in-lock; one single-valued cell co-encodes holder|expiry|epoch;
+;; a lapsed lease is reclaimed by the next acquirer's own commit (no sweeper).
+;; ============================================================================
+(ns fram.cnf-coord)
+(define-mode strict)
+(require fram.types :as t)
+(require fram.cnf :as c)
+(require fram.schema :as s)
+(require fram.kernel :as ck)
+(require clojure.string :as str)
+(require fram.rt :as rt)   ; the clj runtime the host-seam externs below bind to
+
+;; --- host seam (the irreducible non-Beagle floor; impl in fram.rt) ----------
+(declare-extern fram.rt/now-ms [-> Int])                          ; coord clock (lease expiry)
+(declare-extern fram.rt/new-monitor [-> Any])                     ; a fresh JVM write monitor
+(declare-extern fram.rt/with-lock [Any [-> Any] -> Any])          ; serialize a thunk under it
+(declare-extern fram.rt/append-records-fsync! [String (Vec (Map Keyword Any)) -> Nil]) ; durable append
+(declare-extern fram.rt/read-lines [String -> (Vec String)])      ; all lines of a file
+(declare-extern fram.rt/parse-edn [String -> Any])                ; EDN parse, nil on torn line
+(declare-extern fram.rt/spit-file [String String -> Nil])         ; (re)create / clear a file
+
+(def lease-pred :- String "lease")   ; the lease cell predicate (was ^:dynamic; it is a constant)
+
+;; The coordinator handle: a typed store + its durable log path + a write monitor.
+;; log is (U String Nil): the daemon's drop-in mode passes nil (it owns the flat
+;; log and must NOT double-write); new-coord always sets a real path.
+(defrecord Coord [store :- (Atom t/Store) log :- (U String Nil) lock :- Any])
+
+;; --- atomic v2 log: a tx's records + :commit, fsync'd -----------------------
+(defn- append-tx! [co :- Coord records :- (Vec (Map Keyword Any))] :- Nil
+  (let [lg :- (U String Nil) (:log co)]
+    (if (some? lg) (rt/append-records-fsync! lg records) nil)))
+
+;; --- reads over the typed store ---------------------------------------------
+;; live cids on (l,p) — PUBLIC: the daemon consults it (2 sites) for warm reads.
+(defn live-cids-lp [co :- Coord te :- Int pid :- Int] :- (Vec Int)
+  (c/by-lp (:store co) te pid))
+(defn- seq-of [co :- Coord cid :- Int] :- Int
+  (let [tx :- Int? (c/claim-tx (:store co) cid)]
+    (if (some? tx) (c/tx-seq (:store co) tx) 0)))
+(defn base-version [co :- Coord te :- Int pid :- Int] :- Int
+  (reduce (fn [m :- Int cid :- Int] :- Int (max m (seq-of co cid)))
+          0 (c/by-lp (:store co) te pid)))
+(defn current-seq [co :- Coord] :- Int (c/current-seq (:store co)))
+
+;; does any live cid in `live` point its r at `target`? (multi-valued idempotency)
+(defn- live-has-r? [co :- Coord live :- (Vec Int) target :- Int] :- Bool
+  (not (empty? (filterv (fn [cd :- Int] :- Bool (= target (c/claim-r (:store co) cd))) live))))
+
+(defn- ent! [co :- Coord tx :- Int nm :- String] :- Int
+  (let [ex :- Int? (s/resolve-name (:store co) nm)]
+    (if (some? ex)
+      ex
+      (let [e :- Int (c/entity! (:store co))]
+        (s/name! (:store co) e nm tx)
+        e))))
+
+;; (#12) a kernel-single predicate never def-predicate!'d defaults to "multi", so
+;; schema's link!/assert! would NOT supersede. Pin cardinality "single" (same tx)
+;; before such a write. Idempotent: only when kernel says single but store doesn't.
+(defn- ensure-single-cardinality! [co :- Coord tx :- Int pred :- String kind :- Keyword] :- Any
+  (if (and (ck/single? pred) (not (= "single" (s/cardinality (:store co) pred))))
+    (s/def-predicate! (:store co) pred "single" (if (= kind :link) "ref" "literal") tx)
+    nil))
+
+;; --- obligation: depends_on/part_of acyclicity (pure, over resolved Int ids) -
+;; Int reachability over the live (x,pid,_) edges. Hand-rolled (loop/recur) rather
+;; than ck/reachable-from? because that traversal is String-typed (it serves the
+;; name-graph); a generic [A] reachable-from? would let this reuse it (GAP-LIST).
+(defn- succ-ids [co :- Coord pid :- Int x :- Int] :- (Vec Int)
+  (mapv (fn [cd :- Int] :- Int (let [r :- Int? (c/claim-r (:store co) cd)] (if (some? r) r 0)))
+        (c/by-lp (:store co) x pid)))
+(defn- reaches? [co :- Coord pid :- Int from :- Int to :- Int] :- Bool
+  (loop [front [from] seen #{}]
+    (cond
+      [(empty? front) false]
+      [(= (first front) to) true]
+      [(contains? seen (first front)) (recur (vec (rest front)) seen)]
+      [:else (recur (vec (concat (rest front) (succ-ids co pid (first front))))
+                    (conj seen (first front)))])))
+
+;; --- bootstrap a coordinator (multi-store: one engine, many coordinators) ----
+(defn new-coord! [log-path :- String] :- Coord
+  (rt/spit-file log-path "")
+  (let [st  (c/new-store)
+        tx0 :- Int (c/begin-tx! st "bootstrap")
+        co  (->Coord st log-path (rt/new-monitor))]
+    (s/setup! st tx0)
+    (append-tx! co (c/records-since st 0 tx0))      ; the bootstrap is the first committed tx
+    co))
+
+;; register a domain predicate's metadata (its own committed tx)
+(defn register-pred! [co :- Coord pname :- String card :- String kind :- String] :- String
+  (let [out :- String
+        (rt/with-lock (:lock co)
+          (fn [] :- Any
+            (let [st    (:store co)
+                  since :- Int (c/next-id st)
+                  tx    :- Int (c/begin-tx! st "schema")]
+              (s/def-predicate! st pname card kind tx)
+              (append-tx! co (c/records-since st since tx))
+              pname)))]
+    out))
+
+;; --- the sole writer --------------------------------------------------------
+;; kind = :assert (literal value) | :link (ref to an entity by name).
+(defn commit! [co :- Coord agent :- Any te-name :- String pred :- String
+               kind :- Keyword r-spec :- Any base :- Int] :- (Map Keyword Any)
+  (let [out :- (Map Keyword Any)
+        (rt/with-lock (:lock co)
+          (fn [] :- Any
+            (let [st     (:store co)
+                  pid    :- Int? (c/value-id st pred)
+                  te0    :- Int? (s/resolve-name st te-name)
+                  tgt0   :- Int? (if (= kind :link) (s/resolve-name st (str r-spec)) nil)
+                  vid    :- Int? (if (= kind :assert) (c/value-id st r-spec) nil)
+                  single :- Bool (or (= "single" (s/cardinality st pred)) (ck/single? pred))
+                  bv     :- Int (if (and (some? te0) (some? pid)) (base-version co te0 pid) 0)
+                  live   :- (Vec Int) (if (and (some? te0) (some? pid)) (c/by-lp st te0 pid) [])]
+              (cond
+                ;; (1)(6) base_version: reject a stale single-valued write
+                [(and single (> bv base))
+                 {:reject :conflict :version (c/current-seq st)}]
+                ;; (2)(3) obligation: acyclicity — pure pre-check, before any mutation
+                [(and (= kind :link) (contains? #{"depends_on" "part_of"} pred)
+                      (or (= te-name (str r-spec))
+                          (and (some? te0) (some? tgt0) (some? pid) (reaches? co pid tgt0 te0))))
+                 {:reject [(str pred " cycle")] :version (c/current-seq st)}]
+                ;; (4) multi-valued idempotency: no-op if the live (l,p,r) already exists
+                [(and (not single) (= kind :link) (some? tgt0) (live-has-r? co live tgt0))
+                 {:ok (c/current-seq st) :idempotent true}]
+                [(and (not single) (= kind :assert) (some? vid) (live-has-r? co live vid))
+                 {:ok (c/current-seq st) :idempotent true}]
+                [:else
+                 (let [since :- Int (c/next-id st)
+                       tx    :- Int (c/begin-tx! st agent)
+                       te    :- Int (ent! co tx te-name)]
+                   (ensure-single-cardinality! co tx pred kind)
+                   (if (= kind :link)
+                     (s/link! st te pred (ent! co tx (str r-spec)) tx)
+                     (s/assert! st te pred r-spec tx))
+                   (append-tx! co (c/records-since st since tx))   ; (5) atomic + fsync
+                   {:ok (c/tx-seq st tx)})]))))]
+    out))
+
+;; retract: single-valued clears (te,pred); multi-valued removes the (te,pred,r)
+;; edge. Same lock + base_version contract. Supersession is append-only (a
+;; cnf-supersedes claim marks each victim), so retract is itself reversible.
+(defn retract! [co :- Coord agent :- Any te-name :- String pred :- String
+                r-spec :- Any base :- Int] :- (Map Keyword Any)
+  (let [out :- (Map Keyword Any)
+        (rt/with-lock (:lock co)
+          (fn [] :- Any
+            (let [st     (:store co)
+                  pid    :- Int? (c/value-id st pred)
+                  te0    :- Int? (s/resolve-name st te-name)
+                  single :- Bool (or (= "single" (s/cardinality st pred)) (ck/single? pred))]
+              (if (and (some? te0) (some? pid))
+                (let [bv :- Int (base-version co te0 pid)]
+                  (if (and single (> bv base))
+                    {:reject :conflict :version (c/current-seq st)}
+                    (let [tgt :- Int? (if (and (some? r-spec) (str/starts-with? (str r-spec) "@"))
+                                        (s/resolve-name st (str r-spec))
+                                        (c/value-id st r-spec))
+                          allc :- (Vec Int) (c/by-lp st te0 pid)
+                          victims :- (Vec Int)
+                            (if single
+                              allc
+                              (filterv (fn [cd :- Int] :- Bool (= tgt (c/claim-r st cd))) allc))]
+                      (if (empty? victims)
+                        {:ok (c/current-seq st)}
+                        (let [since :- Int (c/next-id st)
+                              tx    :- Int (c/begin-tx! st agent)
+                              sup   :- Int (c/value! st "cnf-supersedes")]
+                          (doseq [old victims] (c/claim! st old sup old tx))
+                          (append-tx! co (c/records-since st since tx))
+                          {:ok (c/tx-seq st tx)})))))
+                {:ok (c/current-seq st)}))))]   ; nothing to retract
+    out))
+
+;; --- exclusive lease (mutual exclusion + fencing) — ADDITIVE -----------------
+;; Closes the lost-update-not-mutex hole: base_version protects against a STALE
+;; overwrite, not against two acquirers each reading a FRESH base. The acquire
+;; reads holder LIVENESS fresh INSIDE the lock; one single-valued cell on
+;; @lease:<R> co-encodes holder|expiry-ms|epoch; held-ness is DERIVED (present AND
+;; expiry > coord-clock). A lapsed lease is reclaimed by the next acquirer's commit.
+(defn- lease-subj [res :- String] :- String (str "@lease:" res))
+(defn- encode-lease [h :- String exp :- Int epoch :- Int] :- String (str h "|" exp "|" epoch))
+;; typed views over a decoded lease (a (Map Keyword Any) — same boundary as claim-of)
+(defn- lease-holder [m :- (Map Keyword Any)] :- String (:holder m))
+(defn- lease-exp    [m :- (Map Keyword Any)] :- Int (:exp m))
+(defn- lease-epoch  [m :- (Map Keyword Any)] :- Int (:epoch m))
+(defn- decode-lease [v :- Any] :- (U (Map Keyword Any) Nil)
+  (if (string? v)
+    (let [parts :- (Vec String) (str/split v #"\|")]
+      (if (= 3 (count parts))
+        {:holder (nth parts 0) :exp (parse-long (nth parts 1)) :epoch (parse-long (nth parts 2))}
+        nil))
+    nil))
+(defn- read-lease [co :- Coord res :- String] :- (U (Map Keyword Any) Nil)
+  (let [st  (:store co)
+        te  :- Int? (s/resolve-name st (lease-subj res))
+        pid :- Int? (c/value-id st lease-pred)]
+    (if (and (some? te) (some? pid))
+      (let [cid :- Int? (first (c/by-lp st te pid))]
+        (if (some? cid)
+          (let [rid :- Int? (c/claim-r st cid)]
+            (if (some? rid) (decode-lease (c/literal st rid)) nil))
+          nil))
+      nil)))
+
+;; acquire (or refresh-if-mine, or reclaim-if-lapsed). ttl-ms = lease duration.
+(defn acquire-lease! [co :- Coord holder :- String res :- String ttl-ms :- Int] :- (Map Keyword Any)
+  (let [out :- (Map Keyword Any)
+        (rt/with-lock (:lock co)
+          (fn [] :- Any
+            (let [st  (:store co)
+                  now :- Int (rt/now-ms)                  ; sole clock authority, read IN-lock
+                  cur :- (U (Map Keyword Any) Nil) (read-lease co res)]
+              (if (and (some? cur) (> (lease-exp cur) now) (not (= (lease-holder cur) holder)))
+                {:reject :held :holder (lease-holder cur) :exp (lease-exp cur) :version (c/current-seq st)}
+                (let [epoch :- Int (+ 1 (if (some? cur) (lease-epoch cur) 0))   ; monotonic fence epoch
+                      exp   :- Int (+ now ttl-ms)
+                      since :- Int (c/next-id st)
+                      tx    :- Int (c/begin-tx! st holder)
+                      te    :- Int (ent! co tx (lease-subj res))]
+                  (if (not (= "single" (s/cardinality st lease-pred)))   ; the cell must supersede
+                    (s/def-predicate! st lease-pred "single" "literal" tx)
+                    nil)
+                  (s/assert! st te lease-pred (encode-lease holder exp epoch) tx)
+                  (append-tx! co (c/records-since st since tx))
+                  {:ok (c/tx-seq st tx) :holder holder :exp exp :epoch epoch})))))]
+    out))
+
+(defn release-lease! [co :- Coord holder :- String res :- String] :- (Map Keyword Any)
+  (let [out :- (Map Keyword Any)
+        (rt/with-lock (:lock co)
+          (fn [] :- Any
+            (let [cur :- (U (Map Keyword Any) Nil) (read-lease co res)]
+              (if (and (some? cur) (= (lease-holder cur) holder))
+                (retract! co holder (lease-subj res) lease-pred nil (current-seq co))
+                {:ok (current-seq co) :noop true}))))]
+    out))
+
+;; fencing: a write tagged with the holder's epoch is valid ONLY while that holder
+;; still holds the lease at that epoch. A re-acquire bumps the epoch -> stale rejected.
+(defn fence-ok? [co :- Coord res :- String holder :- String epoch :- Int] :- Bool
+  (let [out :- Bool
+        (rt/with-lock (:lock co)
+          (fn [] :- Any
+            (let [cur :- (U (Map Keyword Any) Nil) (read-lease co res)]
+              (and (some? cur) (= (lease-holder cur) holder) (= epoch (lease-epoch cur))
+                   (> (lease-exp cur) (rt/now-ms))))))]
+    out))
+
+;; --- replay: rebuild the store from the v2 log (drops torn/uncommitted txs) --
+(defn- read-records [path :- String] :- (Vec Any)
+  (filterv (fn [r :- Any] :- Bool (some? r))
+           (mapv (fn [ln :- String] :- Any (rt/parse-edn ln)) (rt/read-lines path))))
+
+;; group into per-tx buffers; a buffer terminated by :commit is kept, a trailing
+;; buffer with no :commit (a torn tx, always last under a single appender) is dropped.
+(defn- committed-records [recs :- (Vec Any)] :- (Vec Any)
+  (loop [rs recs buf [] out []]
+    (if (empty? rs)
+      out
+      (let [r :- Any (first rs)]
+        (if (= (:k r) :commit)
+          (recur (vec (rest rs)) [] (vec (concat out buf)))
+          (recur (vec (rest rs)) (vec (concat buf [r])) out))))))
+
+;; records whose :k = k
+(defn- recs-of [recs :- (Vec Any) k :- Keyword] :- (Vec Any)
+  (filterv (fn [r :- Any] :- Bool (= (:k r) k)) recs))
+
+(defn- assemble-dump [recs :- (Vec Any)] :- (Map Keyword Any)
+  (let [vrecs :- (Vec Any) (recs-of recs :value)
+        crecs :- (Vec Any) (recs-of recs :claim)
+        trecs :- (Vec Any) (recs-of recs :tx)
+        erecs :- (Vec Any) (recs-of recs :entity)
+        vals    :- (Vec Any) (mapv (fn [r :- Any] :- Any [(:id r) (:v r)]) vrecs)
+        claims  :- (Vec Any) (mapv (fn [r :- Any] :- Any [(:cid r) {:l (:l r) :p (:p r) :r (:r r)}]) crecs)
+        tx-of   :- (Vec Any) (mapv (fn [r :- Any] :- Any [(:cid r) (:tx r)]) crecs)
+        txs     :- (Vec Any) (mapv (fn [r :- Any] :- Any [(:tx r) {:seq (:seq r) :agent (:agent r)}]) trecs)
+        val-ids :- (Vec Any) (mapv (fn [r :- Any] :- Any (:id r)) vrecs)
+        ent-ids :- (Vec Any) (mapv (fn [r :- Any] :- Any (:id r)) erecs)
+        cl-ids  :- (Vec Any) (mapv (fn [r :- Any] :- Any (:cid r)) crecs)
+        tx-ids  :- (Vec Any) (mapv (fn [r :- Any] :- Any (:tx r)) trecs)
+        ;; supersedes-pred: the id of the value record whose v == "cnf-supersedes"
+        sup :- Int? (reduce (fn [acc :- Int? r :- Any] :- Int?
+                              (if (= (:v r) "cnf-supersedes") (:id r) acc)) nil vrecs)
+        ;; superseded victims: the r of each claim whose p == sup
+        superd :- (Vec Any) (mapv (fn [r :- Any] :- Any (:r r))
+                                  (filterv (fn [r :- Any] :- Bool (= (:p r) sup)) crecs))
+        all-id :- (Vec Any) (vec (concat val-ids ent-ids cl-ids tx-ids))
+        all-sq :- (Vec Any) (mapv (fn [r :- Any] :- Any (:seq r)) trecs)]
+    ;; counters hold the LAST-used id/seq, so recover as max (NOT max+1) — else the
+    ;; next mint would skip an id/seq instead of continuing contiguously.
+    {:next-id (reduce (fn [m :- Int x :- Any] :- Int (let [xi :- Int x] (max m xi))) 0 all-id)
+     :next-seq (reduce (fn [m :- Int x :- Any] :- Int (let [xi :- Int x] (max m xi))) 0 all-sq)
+     :supersedes-pred sup
+     :objects (vec (concat val-ids ent-ids cl-ids))
+     :values vals :claims claims :tx-of tx-of :txs txs :superseded superd}))
+
+(defn replay! [path :- String] :- (Atom t/Store)
+  (let [st (c/new-store)]
+    (c/load-store! st (assemble-dump (committed-records (read-records path))))
+    st))
+
+;; write a whole reified store as a v2 log (all records + one trailing :commit)
+;; that `replay` consumes — the migration target.
+(defn dump-log! [st :- (Atom t/Store) path :- String] :- Nil
+  (rt/spit-file path "")
+  (rt/append-records-fsync! path (vec (concat (c/all-records st) [{:k :commit :tx :migration}]))))
+
+;; live (l,p,r) id-triples of a reified store (substrate identity for tests/diff)
+(defn live-triples [st :- (Atom t/Store)] :- (Set (Vec Int))
+  (reduce (fn [acc :- (Set (Vec Int)) cid :- Int] :- (Set (Vec Int)) (conj acc (c/claim-lpr st cid)))
+          #{} (c/current-claims st)))
