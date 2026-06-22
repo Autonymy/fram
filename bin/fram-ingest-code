@@ -112,6 +112,26 @@
     (into [{:op "assert" :l (str "@" module "#root") :p "file" :r path}]
           node-claims)))
 
+;; --- #2: emit code-pred cardinality so the log is BORN self-describing --------
+;; #2 made the engine read each pred's cardinality FROM THE LOG (no runtime auto-pin),
+;; defaulting an unpinned pred to MULTI. The code domain is an AST: every pred is
+;; single-valued (one kind/v/pos/span per node, one child per ORDERED slot fN/segN/
+;; commentN, one tail/file) EXCEPT `child` — the many-children containment edge
+;; (a node carries up to N child edges). Without these claims the new engine reads
+;; code preds MULTI -> supersession breaks (stale slots accumulate, rename/edit go
+;; wrong). Multi is the engine default (no claim emitted), so emit only the singles.
+;; "cardinality" pins ITSELF single (the metaclaim is then idempotent: one per pred).
+(def multi-preds #{"child"})
+;; structural code preds an EDIT may introduce after ingest (bound_to via rename, tail
+;; via improper lists, pos/span srcloc, name) — pin single even when absent in this
+;; corpus, so the first such edit supersedes correctly instead of accumulating.
+(def structural-single
+  #{"kind" "v" "pos" "span" "name" "file" "tail" "bound_to" "placement" "style"})
+(defn- cardinality-claims [ast-claims]
+  (->> (concat (map :p ast-claims) structural-single ["cardinality"])
+       distinct (remove multi-preds)
+       (mapv (fn [p] {:op "assert" :l p :p "cardinality" :r "single"}))))
+
 ;; --- main --------------------------------------------------------------------
 (let [{:keys [srcs out module append]} (parse-args *command-line-args*)
       out-path (or out (str (System/getProperty "user.dir") "/.fram/code.log"))]
@@ -123,7 +143,10 @@
     (when (empty? files) (die "no .bclj modules matched" (pr-str srcs) (when module (str "(module filter: " module ")"))))
     (log! "fram-ingest-code: folding" (count files) "module(s) ->" out-path
           (when module (str "(module filter: " module ")")))
-    (let [all-claims (mapcat module->claims files)
+    (let [ast-claims (mapcat module->claims files)
+          ;; #2: append (P "cardinality" "single") for every single code pred (all but
+          ;; `child`) so the log self-describes. Order-independent fold, so trailing is fine.
+          all-claims (concat ast-claims (cardinality-claims ast-claims))
           ;; monotone :tx across the whole log; existing daemon seeds :next-seq to max.
           base (if (and append (.exists (io/file out-path)))
                  (->> (str/split-lines (slurp out-path))
@@ -142,7 +165,8 @@
       (if append
         (spit out-path body :append true)
         (spit out-path body))
-      (log! "fram-ingest-code: wrote" (count all-claims) "AST claims"
-            (str "(" (count files) " module(s); ids re-keyed @<mod>#<n>)"))
+      (log! "fram-ingest-code: wrote" (count all-claims) "claims"
+            (str "(" (count ast-claims) " AST + " (- (count all-claims) (count ast-claims))
+                 " cardinality; " (count files) " module(s); ids re-keyed @<mod>#<n>)"))
       (doseq [f files] (log! "  +" (module-of f) "<-" f))
       (log! "DONE — the .bclj is now downstream of" out-path))))
