@@ -23,3 +23,5 @@ private-docs/
 # ephemeral work artifacts (migration dry-runs, log copies)
 .scratch/
 RECOVERY-*.md
+# code-as-claims live-feed runtime state (daemon pid; *.log already ignores the live log)
+.fram/code-daemon-*.pid

@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# ============================================================================
+# fram-code-demo — code-as-claims LIVE FEED, Phase 1 (the WOW), one command.
+# ============================================================================
+# Stands up a dedicated CODE daemon on :7979 booted EMPTY (only the code-pred
+# cardinality seed, so single-valued preds supersede correctly), then REPLAYS a
+# real beagle program's AST claims into it WITH TIMING so the graph materializes
+# on screen. Point framescope at  http://localhost:8088/?port=7979  and watch the
+# program assemble (nodes appear over a few seconds) in 2D + 3D.
+#
+#   bin/fram-code-demo [start]   seed + launch :7979 + replay (default)
+#   bin/fram-code-demo stop      kill the :7979 code daemon
+#   bin/fram-code-demo replay    re-run the replay against an already-empty :7979
+#
+# Env:
+#   CODE_PORT   (default 7979)         the code daemon's port (NOT 7977/7978)
+#   SRC_LOG     (default .fram/code.log)  the committed, ingested code log to replay
+#   DURATION    (default 10)           seconds to spread the materialization over
+#   MODULE      (unset = whole log)    restrict to one module (e.g. schema)
+# ============================================================================
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$HERE"
+
+PORT="${CODE_PORT:-7979}"
+SRC="${SRC_LOG:-$HERE/.fram/code.log}"
+LIVE="$HERE/.fram/code-live.log"
+DLOG="$HERE/.fram/code-daemon-$PORT.log"
+PIDF="$HERE/.fram/code-daemon-$PORT.pid"
+DURATION="${DURATION:-10}"
+
+daemon_up() { bb -e '(require (quote [clojure.edn :as edn]))(import (quote [java.net Socket InetSocketAddress]))
+  (try (with-open [s (Socket.)] (.connect s (InetSocketAddress. "127.0.0.1" (Integer/parseInt (first *command-line-args*))) 800)
+    (let [w (.getOutputStream s) r (clojure.java.io/reader (.getInputStream s))]
+      (.write w (.getBytes "{:op :version}\n")) (.flush w)
+      (if (:version (edn/read-string (.readLine r))) (System/exit 0) (System/exit 1))))
+    (catch Exception _ (System/exit 1)))' "$PORT" >/dev/null 2>&1; }
+
+stop_daemon() {
+  if [[ -f "$PIDF" ]] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then
+    kill "$(cat "$PIDF")" 2>/dev/null || true; rm -f "$PIDF"
+    echo "fram-code-demo: stopped code daemon on :$PORT"
+  else
+    echo "fram-code-demo: no tracked daemon on :$PORT (pidfile $PIDF)"
+  fi
+}
+
+seed_live_log() {
+  # The boot log carries ONLY the (P cardinality single) metaclaims so the engine
+  # reads code preds as single-valued BEFORE replay (correct supersession). The AST
+  # itself arrives live over the wire. Born-empty store, born self-describing schema.
+  [[ -f "$SRC" ]] || { echo "fram-code-demo: no source log at $SRC (run bin/fram-ingest-code first)" >&2; exit 1; }
+  mkdir -p "$HERE/.fram"
+  bb -e '(require (quote [clojure.string :as str]) (quote [clojure.edn :as edn]))
+    (let [[src out] *command-line-args*]
+      (->> (str/split-lines (slurp src)) (remove str/blank?)
+           (keep #(try (edn/read-string %) (catch Exception _ nil)))
+           (filter #(= "cardinality" (:p %)))
+           (map-indexed (fn [i c] (pr-str (assoc c :tx (inc i)))))
+           (str/join "\n") (#(spit out (str % "\n")))))' "$SRC" "$LIVE"
+  echo "fram-code-demo: seeded $LIVE ($(wc -l < "$LIVE") cardinality claims; store boots EMPTY)"
+}
+
+start_daemon() {
+  if daemon_up; then
+    echo "fram-code-demo: a daemon is ALREADY up on :$PORT — refusing to double-replay." >&2
+    echo "  stop it first:  bin/fram-code-demo stop   (or set CODE_PORT to a free port)" >&2
+    exit 1
+  fi
+  seed_live_log
+  echo "fram-code-demo: launching code daemon on :$PORT over $LIVE  (log: $DLOG)"
+  nohup "$HERE/bin/fram-daemon" "$PORT" "$LIVE" >"$DLOG" 2>&1 &
+  echo $! > "$PIDF"
+  printf "fram-code-demo: waiting for :%s" "$PORT"
+  for _ in $(seq 1 60); do
+    if daemon_up; then echo " up."; return 0; fi
+    printf "."; sleep 0.5
+  done
+  echo " TIMEOUT — see $DLOG" >&2; exit 1
+}
+
+run_replay() {
+  local args=(--port "$PORT" --from "$SRC" --duration "$DURATION")
+  [[ -n "${MODULE:-}" ]] && args+=(--module "$MODULE")
+  bb "$HERE/bin/fram-replay-code" "${args[@]}"
+  echo
+  echo "  ┌─ WATCH IT MATERIALIZE ────────────────────────────────────────────"
+  echo "  │  framescope:  cd ~/code/framescope && bin/framescope"
+  echo "  │  then open :  http://localhost:8088/?port=$PORT   (Graph tab)"
+  echo "  │  stop daemon: bin/fram-code-demo stop"
+  echo "  └───────────────────────────────────────────────────────────────────"
+}
+
+case "${1:-start}" in
+  start)  start_daemon; run_replay ;;
+  stop)   stop_daemon ;;
+  replay) run_replay ;;
+  *) echo "usage: bin/fram-code-demo [start|stop|replay]" >&2; exit 1 ;;
+esac

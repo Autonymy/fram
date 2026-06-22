@@ -1,0 +1,99 @@
+#!/usr/bin/env bb
+;; ============================================================================
+;; fram-replay-code — code-as-claims LIVE FEED, Phase 1: a program MATERIALIZES.
+;; ============================================================================
+;; Streams a code log's AST claims into a RUNNING fram daemon over the wire, WITH
+;; TIMING, so the graph assembles on screen (nodes appear over a few seconds) for
+;; framescope to watch (?port=<daemon>). This is #33 (code-as-claims) made visceral:
+;; watch a beagle program become a live graph.
+;;
+;; Replays ONLY the AST claims. The `cardinality` metaclaims are reserved schema-
+;; preds (coord_daemon/do-assert! REJECTS them), so they are SEEDED into the
+;; daemon's boot log instead (see bin/fram-code-demo), not replayed here. Each
+;; accepted assert fires a :commit event -> framescope /live WS -> a node/edge
+;; appears live.
+;;
+;; Wire op per claim: {:op :assert :te <subject> :p <pred> :r <obj> :base 0}.
+;; base 0 is the first-write base for a fresh (te,p) cell in an empty daemon —
+;; the same base the daemon's own race test uses. The daemon closes the socket
+;; after each request (serve-conn), so this opens one short-lived socket per assert.
+;;
+;; USAGE:
+;;   bin/fram-replay-code [--port 7979] [--from .fram/code.log] [--module <name>]
+;;     --port <n>        target daemon port (default 7979 — the CODE daemon)
+;;     --from <log>      source code log (default $PWD/.fram/code.log)
+;;     --module <name>   replay only @<name># claims (substring match on subject)
+;;     --duration <s>    spread the replay over ~N seconds (default 8)
+;;     --fps <n>         materialization frame rate (ticks/sec; default 12)
+;;     --limit <n>       replay only the first N AST claims (smoke test)
+;;     --dry-run         print the plan, don't connect
+;; ============================================================================
+(require '[clojure.string :as str]
+         '[clojure.java.io :as io]
+         '[clojure.edn :as edn])
+(import '[java.net Socket InetSocketAddress])
+
+(defn- die [& xs] (binding [*out* *err*] (apply println xs)) (System/exit 1))
+(defn- log! [& xs] (binding [*out* *err*] (apply println xs)))
+
+(defn- parse-args [args]
+  (loop [a args, o {:port 7979 :from nil :module nil :duration 8.0 :fps 12 :limit nil :dry false}]
+    (cond
+      (empty? a) o
+      (= "--port" (first a))     (recur (drop 2 a) (assoc o :port (parse-long (second a))))
+      (= "--from" (first a))     (recur (drop 2 a) (assoc o :from (second a)))
+      (= "--module" (first a))   (recur (drop 2 a) (assoc o :module (second a)))
+      (= "--duration" (first a)) (recur (drop 2 a) (assoc o :duration (parse-double (second a))))
+      (= "--fps" (first a))      (recur (drop 2 a) (assoc o :fps (parse-long (second a))))
+      (= "--limit" (first a))    (recur (drop 2 a) (assoc o :limit (parse-long (second a))))
+      (= "--dry-run" (first a))  (recur (rest a) (assoc o :dry true))
+      :else                      (die "unknown arg" (first a)))))
+
+;; one request per connection (the daemon closes after each), 2s connect cap.
+(defn- send-op [port op]
+  (with-open [s (Socket.)]
+    (.connect s (InetSocketAddress. "127.0.0.1" (int port)) 2000)
+    (.setSoTimeout s 4000)
+    (let [w (.getOutputStream s) r (io/reader (.getInputStream s))]
+      (.write w (.getBytes (str (pr-str op) "\n"))) (.flush w)
+      (edn/read-string (.readLine r)))))
+
+(let [{:keys [port from module duration fps limit dry]} (parse-args *command-line-args*)
+      log-path (or from (str (System/getProperty "user.dir") "/.fram/code.log"))]
+  (when-not (.exists (io/file log-path)) (die "no code log at" log-path))
+  (let [claims (->> (str/split-lines (slurp log-path))
+                    (remove str/blank?)
+                    (keep #(try (edn/read-string %) (catch Exception _ nil)))
+                    ;; AST only: drop the reserved `cardinality` metaclaims (seeded, not replayed).
+                    (remove #(= "cardinality" (:p %)))
+                    (filter #(or (nil? module) (and (string? (:l %)) (str/includes? (:l %) (str "@" module "#")))))
+                    (sort-by :tx)                       ; ingest order ~ DFS: parents before children
+                    vec)
+        claims (if limit (vec (take limit claims)) claims)
+        n      (count claims)]
+    (when (zero? n) (die "no AST claims matched" (when module (str "(module " module ")"))))
+    ;; tick sizing: spread n asserts across (duration*fps) frames so the graph grows smoothly.
+    (let [ticks   (max 1 (long (Math/round (* duration (double fps)))))
+          per     (max 1 (long (Math/ceil (/ (double n) ticks))))
+          tick-ms (long (Math/round (/ 1000.0 fps)))]
+      (log! (format "fram-replay-code: %d AST claims -> :%d  (~%.1fs, %d/tick, %dms/tick%s)"
+                    n port duration per tick-ms (if module (str ", module " module) "")))
+      (when dry
+        (log! "DRY RUN — first 3 asserts:")
+        (doseq [c (take 3 claims)] (log! "  " (pr-str {:op :assert :te (:l c) :p (:p c) :r (:r c) :base 0})))
+        (System/exit 0))
+      ;; sanity: the daemon must be up.
+      (let [v (try (:version (send-op port {:op :version})) (catch Exception e (die "daemon :%d unreachable —" port (.getMessage e))))]
+        (log! (format "  daemon :%d up at version %s; materializing..." port v)))
+      (let [ok (atom 0) rej (atom 0) t0 (System/currentTimeMillis)]
+        (doseq [batch (partition-all per claims)]
+          (doseq [c batch]
+            (let [resp (try (send-op port {:op :assert :te (:l c) :p (:p c) :r (:r c) :base 0})
+                            (catch Exception e {:reject [(.getMessage e)]}))]
+              (if (:ok resp) (swap! ok inc)
+                  (do (swap! rej inc)
+                      (when (<= @rej 5) (log! "  REJECT" (pr-str (select-keys c [:l :p :r])) "->" (pr-str (:reject resp))))))))
+          (Thread/sleep tick-ms))
+        (log! (format "fram-replay-code: DONE — %d asserted, %d rejected, %.1fs wall. Point framescope at ?port=%d."
+                      @ok @rej (/ (- (System/currentTimeMillis) t0) 1000.0) port))
+        (when (pos? @rej) (log! "  (rejects: a non-empty count usually means the daemon was not booted EMPTY — re-seed.)"))))))
