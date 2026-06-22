@@ -18,26 +18,53 @@ Engine pin: beagle `~/code/beagle` @ working tree (parse→check→emit); fram
 
 ---
 
-## The six frozen prompts (SHA-256)
+## The NINE frozen prompts (SHA-256) — RE-FROZEN at harness build (M1.5 + R3 M2)
+
+Supersedes the original six. Two changes folded in at harness time (both mandated by
+the master spec, both validated against the engine):
+1. **M1.5 added** (R2): text front-end, def-level apply — contract "emit ONLY the
+   definitions you add or change"; same TEXT example bank as M1 (the bank's `:m1`
+   values are already minimal changed-def sets, so M1.5's example answers = M1's).
+2. **M2 re-rendered to R3 flat EDN triples with KEYWORD predicates**
+   (`["@m#1" :kind "list"] ["@m#1" :f0 "@m#2"]`), engine-faithful to list/fN/leaf,
+   replacing the bespoke string-pred `[@id "attr" val]` form. The harness adapter
+   (`harness/m2_adapter.bb`) maps these → the engine integer-node `--emit-edn` dump →
+   `beagle-build-all --build-edn` (the recompile gate). Every from-scratch M2 bank
+   example (E1/E2/E4/E5/E7) verified to round-trip through the adapter and build
+   `0 error` in the new format.
 
 | file | arm | density | examples | sha256 |
 |------|-----|---------|----------|--------|
-| `prompts/M1-d3.md`  | M1 text  | d3  | E1–E3  | `7a5fa223dd03ff019615c1ccd7bd300b3718ac50c5a14dadab6be6d1d97cd754` |
-| `prompts/M1-d6.md`  | M1 text  | d6  | E1–E6  | `e1ce7de9e042f3dab8ecb0c69ec75692c0b1f8c3c2e7c0640e5b9833e22cbc87` |
-| `prompts/M1-d10.md` | M1 text  | d10 | E1–E10 | `65d0017bbafa7a996f43f9173349622a2d767f8a68da17113581845c8e06b082` |
-| `prompts/M2-d3.md`  | M2 tuple | d3  | E1–E3  | `38bb417e0a5c926606f9218324ca10ac5696d724cdd96c70b1088959dfeea3da` |
-| `prompts/M2-d6.md`  | M2 tuple | d6  | E1–E6  | `cc9748ebfb3cfb1f7e9f8d786b024fc4f91f0481065d94dac30b4f1cb8098f97` |
-| `prompts/M2-d10.md` | M2 tuple | d10 | E1–E10 | `aaffacf4a2dd5d7ed3b6fcc7e36de42d2d48a0591d09f4c6019eb423cf39e046` |
+| `prompts/M1-d3.md`    | M1 text          | d3  | E1–E3  | `d8c171481d6007d907020baa5be594bf910b13b95be4171e5bbef510b1ef1462` |
+| `prompts/M1-d6.md`    | M1 text          | d6  | E1–E6  | `3f47d5ed36a406cc0cc24ab3890f53228e01fad9977aa90a5758192398debd97` |
+| `prompts/M1-d10.md`   | M1 text          | d10 | E1–E10 | `90998fe57cae8cf0add39f27fd030d463c824514786865eb92aab49d9415a395` |
+| `prompts/M1.5-d3.md`  | M1.5 text/def    | d3  | E1–E3  | `83f03bd254c9690cf90b83ac4f75fe91b17d3e3cafc4268b245e3c12a94df259` |
+| `prompts/M1.5-d6.md`  | M1.5 text/def    | d6  | E1–E6  | `99b314f6154fda613c0ca54f7b54fa1bc6bfc6252c2db8d5ef03ce75cb8d6ae1` |
+| `prompts/M1.5-d10.md` | M1.5 text/def    | d10 | E1–E10 | `50d5e9f969c361524a5b3b51383dd1d629502da2753699dd80ce4a4bfa2908b9` |
+| `prompts/M2-d3.md`    | M2 claim-EDN     | d3  | E1–E3  | `dde39a4dc05d2fcde18a29e87419508dc3e544991f8360ef992efff8092d1605` |
+| `prompts/M2-d6.md`    | M2 claim-EDN     | d6  | E1–E6  | `4e08507b89409678381828db8cfd8576825edd40cf712f802532c50b7a25a047` |
+| `prompts/M2-d10.md`   | M2 claim-EDN     | d10 | E1–E10 | `2eb7a116a220e1534ecb986329e54fe40fd3fe82abdaebb7360c60bba53558cd` |
 
 `‹DSL-NAME›` filled to **beagle**. `‹R›` and `‹TOKEN_BUDGET›` left as named
-placeholders (the harness fills them IDENTICALLY across all six — they are not
+placeholders (the harness fills them IDENTICALLY across all nine — they are not
 example content, so hashing them now would couple the freeze to a harness knob).
+Regenerate with `harness/gen-prompts.bb` (deterministic from `prompts/bank.edn`).
 
 **Fairness invariants verified:**
-- Shared instruction block byte-identical across all six (md5 `e70e85a0…`); the ONLY
+- Shared instruction block byte-identical across all NINE (md5 `7948ea07…`); the ONLY
   per-arm difference is the output-contract paragraph (§3). ✔
-- Same bank, same slice boundaries both arms (d3=E1–E3, d6=E1–E6, d10=E1–E10); each
-  example is the SAME program in two representations. ✔
+- Same bank, same slice boundaries all arms (d3=E1–E3, d6=E1–E6, d10=E1–E10); each
+  example is the SAME program in three representations (whole-text / changed-def-text /
+  claim-EDN). ✔
+
+### `:head` shorthand — judgment call (logged)
+The master-spec R3 directive illustrated the form as `["@m#1" :head "defn"] …`. The
+binding constraint there is "engine-faithful to list/fN/leaf", and the engine has NO
+`:head` predicate (the head is `:f0` → a symbol leaf). So the examples use the
+explicit engine-faithful `:f0`→symbol-leaf form (consistency between examples and
+contract is load-bearing — the model imitates the examples). The adapter ALSO accepts
+a `:head "op"` convenience tuple (desugared to `:f0`+leaf) so a model that abbreviates
+still round-trips, but no example teaches it.
 
 ---
 
