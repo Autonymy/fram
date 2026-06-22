@@ -34,6 +34,8 @@
 ;;       set-body    <module> --name <defn> --body-file <edn>
 ;;       upsert-form <module> --spec-file <edn>
 ;;       insert-form <module> --after <anchor> --spec-file <edn>   (CRDT mid-insert, commute)
+;;       delete      <module> --name <def>                         (fail-closed: refuses if it orphans a ref)
+;;       reorder     <module> --name <def> [--after <anchor>]      (move in place — re-spell order key, no node churn; no --after = front)
 ;;     --port   REQUIRED unless --no-commit — coordinator serving the CODE log.
 ;;     --log    code log to boot the store from (default $PWD/.fram/code.log).
 ;;     --out    where to write the rendered .bclj (default: a temp file path is
@@ -135,7 +137,7 @@
 
 (let [{:keys [op module port log out no-commit whole-module old new name body-file spec-file after text placement]} (parse-args the-args)
       log-path (or log (str (System/getProperty "user.dir") "/.fram/code.log"))]
-  (when (str/blank? op) (die "usage: bin/fram-edit-code <op> <module> [verb args] --port <P> [--log <code.log>] [--out <file>] [--no-commit] [--whole-module]\n  ops: rename --old <n> --new <n> | set-body --name <defn> --body-file <edn> | upsert-form --spec-file <edn> | insert-form --after <anchor> --spec-file <edn>"))
+  (when (str/blank? op) (die "usage: bin/fram-edit-code <op> <module> [verb args] --port <P> [--log <code.log>] [--out <file>] [--no-commit] [--whole-module]\n  ops: rename --old <n> --new <n> | set-body --name <defn> --body-file <edn> | upsert-form --spec-file <edn> | insert-form --after <anchor> --spec-file <edn> | delete --name <def> | reorder --name <def> [--after <anchor>]"))
   (when (str/blank? module) (die "module is required (the @<mod># prefix to edit, e.g. schema)"))
   (when-not (.exists (io/file log-path)) (die "no code log at" log-path "(run bin/fram-ingest-code first)"))
   (when (and (not no-commit) (nil? port)) (die "--port <P> is REQUIRED unless --no-commit"))
@@ -169,7 +171,11 @@
                  "insert-comment" (do (when (or (str/blank? after) (str/blank? text))
                                         (die "insert-comment needs --after <anchor> --text <comment> [--placement leading|trailing]"))
                                       {:op "insert-comment" :module module :after after :text text :placement placement})
-                 (die "unknown op:" op "(rename | set-body | upsert-form | insert-form | insert-comment)"))]
+                 "delete"      (do (when (str/blank? name) (die "delete needs --name <def>"))
+                                   {:op "delete" :module module :name name})
+                 "reorder"     (do (when (str/blank? name) (die "reorder needs --name <def> [--after <anchor>]"))
+                                   {:op "reorder" :module module :name name :after after})
+                 (die "unknown op:" op "(rename | set-body | upsert-form | insert-form | insert-comment | delete | reorder)"))]
       ;; SAFETY GATE: refuse unless the daemon serves a CODE log (never lodestar).
       (let [st (coord-rt port {:op :status}) daemon-log (str (:log st))]
         (when (str/blank? daemon-log) (die "coordinator on" port "reports no :log — refusing"))
@@ -219,7 +225,11 @@
                "insert-comment" (do (when (or (str/blank? after) (str/blank? text))
                                       (die "insert-comment needs --after <anchor> --text <comment> [--placement leading|trailing]"))
                                     {:op "insert-comment" :module module :after after :text text :placement placement})
-               (die "unknown op:" op "(rename | set-body | upsert-form | insert-form | insert-comment)"))]
+               "delete"      (do (when (str/blank? name) (die "delete needs --name <def>"))
+                                 {:op "delete" :module module :name name})
+               "reorder"     (do (when (str/blank? name) (die "reorder needs --name <def> [--after <anchor>]"))
+                                 {:op "reorder" :module module :name name :after after})
+               (die "unknown op:" op "(rename | set-body | upsert-form | insert-form | insert-comment | delete | reorder)"))]
 
     ;; 1. boot the reified store over the code log (in-process; this IS the corpus).
     (let [coord (migrate-flat->co log-path)

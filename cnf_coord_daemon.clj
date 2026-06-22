@@ -910,8 +910,8 @@
     ;; (#26) reject UNKNOWN verbs early — before the expensive clone/corpus build and before
     ;; they can fall through to run-verb-warm!'s `(System/exit 2)` default, which would HARD-EXIT
     ;; the daemon on a malformed client request. Known verbs: set-body, upsert-form, rename.
-    (when-not (#{"set-body" "upsert-form" "insert-form" "insert-comment" "rename"} (:op spec))
-      (throw (ex-info (str "edit-min: unknown verb '" (:op spec) "' (known: set-body, upsert-form, insert-form, insert-comment, rename)")
+    (when-not (#{"set-body" "upsert-form" "insert-form" "insert-comment" "rename" "delete" "reorder"} (:op spec))
+      (throw (ex-info (str "edit-min: unknown verb '" (:op spec) "' (known: set-body, upsert-form, insert-form, insert-comment, rename, delete, reorder)")
                       {:reject :unknown-verb})))
     ;; #(a) GRAPH RENAME IS NOW O(1) — references carry DURABLE identity. verb-rename! rewrites
     ;; the DEF binding's spelling only; references follow `bound_to` (the binding's stable @mod#int),
@@ -932,7 +932,11 @@
           ;; verbs (set-body/upsert-form read ONLY their own module's def-binding/frame).
           ;; rename is cross-module (consumer-collision + capture across all srcs read
           ;; the whole corpus' require/frame tables) — leave it whole (nil scope).
-          scope? (#{"set-body" "upsert-form" "insert-form"} (:op spec))
+          ;; delete is ALSO whole-corpus: its no-orphaned-refs invariant reads refers_to
+          ;; across every module (a surviving cross-module ref to a victim must REFUSE),
+          ;; so it must NOT be scoped. reorder is a pure wrapper order-key re-spell (reads
+          ;; only its own module's wrapper) — single-module, scope it like the inserts.
+          scope? (#{"set-body" "upsert-form" "insert-form" "reorder"} (:op spec))
           scope  (when scope? (fn [s] (str/includes? s module)))
           ;; the supersedes pred the migrate store uses (set by s/setup!); the verb's
           ;; resolve-warm-store! re-points :supersedes-pred at "supersedes", but the
