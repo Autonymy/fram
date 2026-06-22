@@ -339,25 +339,163 @@
       (if (some? REFp)
         (let [Bn      :- Int B
               REFpn   :- Int REFp
-              BND     :- Int (or (c/value-id st "bound_to") (c/value! st "bound_to"))
-              v0      :- Int (cd/cur-seq)
-              B-name  :- String (or (s/name-of st Bn) "")
-              already :- (Set Int)
-                (set (keep (fn [cid :- Int] :- Int?
-                             (let [c0 :- (U (Map Keyword Any) Nil) (c/claim-of st cid)]
-                               (if (some? c0) (let [l :- Int (:l c0)] l) nil)))
-                           (c/by-p st BND)))
-              ref-leaves :- (Vec Int)
-                (vec (distinct
-                       (keep (fn [cid :- Int] :- Int?
-                               (let [c0 :- (U (Map Keyword Any) Nil) (c/claim-of st cid)]
-                                 (if (some? c0)
-                                   (if (= Bn (:r c0)) (let [l :- Int (:l c0)] l) nil)
-                                   nil)))
-                             (c/by-p st REFpn))))]
-          (doseq [leaf :- Int ref-leaves]
-            (if (not (contains? already leaf))
-              (cd/do-assert! (or (s/name-of st leaf) "") "bound_to" B-name v0)
-              nil)))
+              B-name0 :- String? (s/name-of st Bn)]
+          ;; a nameless binding can't anchor a bound_to edge; skip the whole persist
+          ;; (degrades that rename to spelling-resolution, never commits an empty-name claim).
+          (if (some? B-name0)
+            (let [B-name  :- String B-name0
+                  BND     :- Int (or (c/value-id st "bound_to") (c/value! st "bound_to"))
+                  v0      :- Int (cd/cur-seq)
+                  already :- (Set Int)
+                    (set (keep (fn [cid :- Int] :- Int?
+                                 (let [c0 :- (U (Map Keyword Any) Nil) (c/claim-of st cid)]
+                                   (if (some? c0) (let [l :- Int (:l c0)] l) nil)))
+                               (c/by-p st BND)))
+                  ref-leaves :- (Vec Int)
+                    (vec (distinct
+                           (keep (fn [cid :- Int] :- Int?
+                                   (let [c0 :- (U (Map Keyword Any) Nil) (c/claim-of st cid)]
+                                     (if (some? c0)
+                                       (if (= Bn (:r c0)) (let [l :- Int (:l c0)] l) nil)
+                                       nil)))
+                                 (c/by-p st REFpn))))]
+              (doseq [leaf :- Int ref-leaves]
+                ;; skip a nameless leaf rather than commit a bound_to with an empty subject
+                (let [lnm :- String? (s/name-of st leaf)]
+                  (if (and (not (contains? already leaf)) (some? lnm))
+                    (cd/do-assert! lnm "bound_to" B-name v0)
+                    nil))))
+            nil))
         nil)
       nil)))
+
+;; the authoring WRITE-PATH: run an edit verb over a CLONE of the store, harvest the
+;; minimal delta as wire ops (asserts + supersede-victim retracts over AST predicates only),
+;; then commit them through cd/do-assert!/do-retract! under the shared dlock, stopping at the
+;; FIRST rejected op. Mutates the durable graph; correctness is critical. PORTED from
+;; cnf_coord_daemon.clj's do-edit-min (PROF instrumentation dropped). Bang-suffixed: it commits.
+(defn do-edit-min! [spec :- (Map Keyword Any)] :- (Map Keyword Any)
+  (let [module :- Any (:module spec)]
+    (if (str/blank? (let [ms :- String module] ms)) (throw (ex-info "edit-min: :module required" {})) nil)
+    (let [op :- Any (:op spec)]
+      (if (not (contains? #{"set-body" "upsert-form" "insert-form" "insert-comment" "rename"} op))
+        (throw (ex-info (str "edit-min: unknown verb '" op "' (known: set-body, upsert-form, insert-form, insert-comment, rename)")
+                        {:reject :unknown-verb}))
+        nil))
+    (let [mod    :- String module
+          op     :- Any (:op spec)
+          co0    :- Any (deref cd/co)
+          real   :- (Atom t/Store) (:store co0)
+          clone  :- (Atom t/Store) (atom (deref real))
+          since  :- Int (:next-id (let [c0 :- t/Store (deref clone)] c0))
+          scope? :- Bool (contains? #{"set-body" "upsert-form" "insert-form"} op)
+          scope  :- (U [String -> Bool] Nil)
+            (if scope? (fn [str0 :- String] :- Bool (str/includes? str0 mod)) (let [x :- (U [String -> Bool] Nil) nil] x))
+          ;; ---- run the verb over the clone (capture-only, no walk; PROF dropped) ----
+          _res   :- Any
+            (binding [r/*reject!* (fn [code :- Any] :- Any
+                                    (throw (ex-info (str "verb rejected the edit (code " code ")")
+                                                    {:reject :verb :code code})))
+                      r/*capture-only?* true
+                      r/*resolve-walk?* false
+                      r/*corpus-scope* scope
+                      r/*corpus-cache* (if scope? (ensure-corpus-groups! mod) (let [x :- Any nil] x))]
+              (r/run-verb-warm! clone spec))
+          ;; ---- harvest the minimal delta off the clone ----
+          m        :- t/Store (deref clone)
+          sup-pid  :- Int? (:supersedes-pred m)
+          since-ids :- (Vec Int) (vec (range (inc since) (inc (:next-id m))))
+          name-of* (fn [eid :- Int] :- String? (s/name-of clone eid))
+          new-eids :- (Vec Int)
+            (vec (filter (fn [id :- Int] :- Bool
+                           (and (contains? (:objects m) id)
+                                (not (contains? (:values m) id))
+                                (not (contains? (:claims m) id))
+                                (nil? (name-of* id))))
+                         since-ids))
+          name-ints :- (Vec Int) (cd/reserve-name-ints! (count new-eids))
+          eid->name :- (Map Int String)
+            (into (let [e :- (Map Int String) {}] e)
+                  (map-indexed (fn [i :- Int eid :- Int] :- (Vec Any) [eid (str "@" mod "#" (nth name-ints i))])
+                               new-eids))
+          wire-name (fn [eid :- Int] :- String?
+                      (let [nm :- String? (get eid->name eid)]
+                        (if (some? nm) nm (name-of* eid))))
+          ->wire (fn [cl :- (Map Keyword Any)] :- (U (Vec Any) Nil)
+                   (let [l  :- Int (:l cl)
+                         p  :- Any (c/literal clone (let [pid :- Int (:p cl)] pid))
+                         r  :- Int (:r cl)
+                         te :- String? (wire-name l)
+                         rs :- Any (if (c/value-object? clone r) (c/literal clone r) (wire-name r))]
+                     (if (and (some? te) (some? rs)) [te p rs] (let [x :- (U (Vec Any) Nil) nil] x))))
+          ;; [cid claim] pairs minted since the snapshot
+          new-cid-claims :- (Vec (Vec Any))
+            (vec (keep (fn [cid :- Int] :- (U (Vec Any) Nil)
+                         (let [cl :- (U (Map Keyword Any) Nil) (get (:claims m) cid)]
+                           (if (some? cl) [cid cl] (let [x :- (U (Vec Any) Nil) nil] x))))
+                       since-ids))
+          new-claims :- (Vec (Map Keyword Any))
+            (vec (filter (fn [cl :- (Map Keyword Any)] :- Bool
+                           (cd/ast-pred-str? (c/literal clone (let [pid :- Int (:p cl)] pid))))
+                         (map (fn [pr :- (Vec Any)] :- (Map Keyword Any) (let [cl :- (Map Keyword Any) (nth pr 1)] cl))
+                              new-cid-claims)))
+          asserts :- (Vec (Vec Any)) (vec (keep ->wire new-claims))
+          ;; supersede victims: cids whose :p is the supersedes-pred -> their :r is a victim cid
+          victim-cids :- (Vec Int)
+            (vec (keep (fn [pr :- (Vec Any)] :- Int?
+                         (let [cl :- (Map Keyword Any) (nth pr 1)]
+                           (if (= (:p cl) sup-pid) (let [r0 :- Int (:r cl)] r0) (let [x :- Int? nil] x))))
+                       new-cid-claims))
+          retracts :- (Vec (Vec Any))
+            (vec (keep (fn [vcid :- Int] :- (U (Vec Any) Nil)
+                         (let [vcl :- (U (Map Keyword Any) Nil) (get (:claims m) vcid)]
+                           (if (some? vcl)
+                             (if (cd/ast-pred-str? (c/literal clone (let [pid :- Int (:p vcl)] pid)))
+                               (->wire vcl)
+                               (let [x :- (U (Vec Any) Nil) nil] x))
+                             (let [y :- (U (Vec Any) Nil) nil] y))))
+                       victim-cids))]
+      ;; ---- commit under the shared dlock (ONE acquisition); rename persists bound_to first ----
+      (cd/with-dlock!
+        (fn [] :- (Map Keyword Any)
+          (if (= "rename" op) (persist-bound-for-rename! spec) nil)
+          (let [v0      :- Int (cd/cur-seq)
+                asserts2 :- (Vec (Vec Any)) (cd/allocate-positions asserts)
+                rej     :- (Atom (U (Map Keyword Any) Nil)) (atom (let [x :- (U (Map Keyword Any) Nil) nil] x))]
+            (binding [cd/*flat-batch* (atom (let [v :- (Vec Any) []] v))]
+              ;; retracts first, stopping at the first rejection
+              (reduce (fn [_acc :- Any trip :- (Vec Any)] :- Any
+                        (if (some? (deref rej))
+                          (reduced _acc)
+                          (let [te  :- String (nth trip 0)
+                                p   :- String (nth trip 1)
+                                r   :- Any (nth trip 2)
+                                res :- (Map Keyword Any) (cd/do-retract! te p r v0)]
+                            (if (some? (:reject res))
+                              (reset! rej {:op :retract :te te :p p :r r :res res})
+                              nil))))
+                      (let [n0 :- Any nil] n0) retracts)
+              ;; asserts: leaf predicates (kind/v) before the rest; stop at first rejection
+              (let [leaf? (fn [trip :- (Vec Any)] :- Bool (contains? #{"kind" "v"} (nth trip 1)))
+                    ordered :- (Vec (Vec Any))
+                      (vec (concat (filter leaf? asserts2) (remove leaf? asserts2)))]
+                (reduce (fn [_acc :- Any trip :- (Vec Any)] :- Any
+                          (if (some? (deref rej))
+                            (reduced _acc)
+                            (let [te  :- String (nth trip 0)
+                                  p   :- String (nth trip 1)
+                                  r   :- Any (nth trip 2)
+                                  res :- (Map Keyword Any) (cd/do-assert! te p r v0)]
+                              (if (some? (:reject res))
+                                (reset! rej {:op :assert :te te :p p :r r :res res})
+                                nil))))
+                        (let [n0 :- Any nil] n0) ordered))
+              (cd/flush-flat-batch!))
+            (let [rj :- (U (Map Keyword Any) Nil) (deref rej)]
+              (if (some? rj)
+                {:reject (:res rj) :failed-op rj :module mod}
+                {:ok true :module mod
+                 :asserts (count asserts2) :retracts (count retracts)
+                 :ops (+ (count asserts2) (count retracts))
+                 :new-nodes (count new-eids) :name-ints name-ints
+                 :version (cd/cur-seq)}))))))))
