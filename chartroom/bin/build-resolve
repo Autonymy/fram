@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# build-resolve: regenerate chartroom/src/resolve.clj from its Beagle source.
+#
+#   bin/build-resolve
+#
+# resolve.clj = beagle-build(resolve.bclj) ++ resolve_cli.clj
+# The Beagle-authored logic (1492 lines, typed) lives in resolve.bclj.
+# The hand-Clojure CLI tail (-main + callgraph datalog/cheshire) lives in resolve_cli.clj.
+# Neither file is the canonical source — resolve.bclj is; resolve.clj is a derived view.
+set -euo pipefail
+
+BEAGLE="${BEAGLE:-$HOME/code/beagle}"
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+src="$HERE/src/resolve.bclj"
+cli="$HERE/src/resolve_cli.clj"
+out="$HERE/src/resolve.clj"
+
+if [[ ! -x "$BEAGLE/bin/beagle-build" ]]; then
+    echo "build-resolve: beagle-build not found at $BEAGLE/bin/beagle-build" >&2
+    exit 1
+fi
+
+tmp="$(mktemp "${out}.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+"$BEAGLE/bin/beagle-build" "$src" "$tmp.part" 2>&1
+emit_lines="$(wc -l < "$tmp.part")"
+cat "$tmp.part" "$cli" > "$tmp"
+rm -f "$tmp.part"
+mv "$tmp" "$out"
+trap - EXIT
+
+echo "build-resolve: $src + $cli -> $out" >&2
+echo "  $(wc -l < "$out") lines total ($emit_lines from beagle-build + $(wc -l < "$cli") cli tail)" >&2
