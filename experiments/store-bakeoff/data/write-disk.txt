@@ -1,0 +1,51 @@
+############## REAL DISK (/tmp btrfs/SSD) ##############
+
+===== fsync=0 (flush only, matches live log) =====
+
+## WRITE throughput — candidate=per-log per-writer=4000 store=/tmp/bakeoff-disk/w fsync=0
+N	wall_ms	total	writes/sec
+1	163	4000	24414
+8	220	32000	144826
+32	537	128000	238006
+128	1819	512000	281422
+
+## WRITE throughput — candidate=per-file per-writer=4000 store=/tmp/bakeoff-disk/w fsync=0
+N	wall_ms	total	writes/sec
+1	317	4000	12609
+8	1570	32000	20372
+32	8153	128000	15699
+128	36375	512000	14075
+
+===== fsync=1 (durable each write/batch) =====
+
+## WRITE throughput — candidate=per-log per-writer=4000 store=/tmp/bakeoff-disk/w fsync=1
+N	wall_ms	total	writes/sec
+1	168	4000	23781
+8	216	32000	147920
+32	569	128000	224639
+128	2178	512000	235011
+
+## WRITE throughput — candidate=per-file per-writer=4000 store=/tmp/bakeoff-disk/w fsync=1
+N	wall_ms	total	writes/sec
+1	360	4000	11092
+8	1720	32000	18601
+32	8039	128000	15921
+128	36471	512000	14038
+
+===== baseline (in-process coordinator), fsync=0 then fsync=1 =====
+## WRITE throughput — candidate=baseline (in-process coordinator) per-writer=4000 fsync=0
+N	wall_ms	total	writes/sec
+1	82	4000	48291
+8	809	32000	39541
+32	3647	128000	35088
+128	14993	512000	34147
+
+## WRITE throughput — candidate=baseline (in-process coordinator) per-writer=4000 fsync=1
+N	wall_ms	total	writes/sec
+1	2254	4000	1774
+8	18865	32000	1696
+## (baseline-floor fsync=1 N>=32 truncated: fsync-per-write under a global lock serializes
+##  fsyncs, ~500 w/s and falling — a non-authoritative simplified baseline; the durability
+##  collapse is already shown at N=1: 48291 flush-only -> 1774 fsync = 27x. The AUTHORITATIVE
+##  baseline is coord_load.clj/commit! anchor in write-tmpfs.txt, 1139->213.)
+DISK-SWEEP-COMPLETE

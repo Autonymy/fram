@@ -1,0 +1,28 @@
+## LOAD/MERGE/READ — M=100000 writers=8 subjects=2000 root=/dev/shm/bk-load100k
+generated 100000 claims
+
+-- building stores --
+
+-- AXIS 2: cold-load + full-fold (ms) --
+baseline/log : {:ms 3047.736775, :n 100000, :state 10000}
+B/per-log    : {:ms 2393.461296, :n 100000, :state 10000}
+A/per-file   : {:ms 4367.93714, :n 100000, :state 10000}
+C/sqlite(app): {:ms 2542.355905, :n 100000, :state 10000}
+
+-- AXIS 5: footprint --
+baseline/log : {:files 1, :bytes 9373223, :mb 9.373223}
+B/per-log    : {:files 8, :bytes 9373223, :mb 9.373223}
+A/per-file   : {:files 100000, :bytes 9273223, :mb 9.273223}
+C/sqlite     : {:files 1, :bytes 10018816, :mb 10.018816}
+
+-- AXIS 4: subject-scoped read ("all claims about  @e7 ") --
+log scan (no idx)   : {:ms 280.160328, :hits 50}
+per-file scan(no idx): {:ms 132.60938, :hits 50}
+log warm-idx (lookup): {:ms 0.008977, :hits 50, :note lookup only (index pre-built)}
+sqlite +index       : {:ms 2.631008, :hits 50}
+
+-- AXIS 3: federation merge (two replicas of M each) --
+A/per-file union : {:ms 2909.832738, :merged 100000}
+B/per-log concat : {:ms 4.179028, :merged 8}
+C/sqlite ins-ign : {:ms 4159.192715, :merged 100000}
+baseline/log     : N/A — single-origin tx-seq collides; cannot union without rewrite

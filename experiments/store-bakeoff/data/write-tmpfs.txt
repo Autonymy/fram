@@ -1,0 +1,39 @@
+############## TMPFS (/dev/shm) — layout-isolated, warm-cache ##############
+
+## WRITE throughput — candidate=per-log per-writer=4000 store=/dev/shm/bk-w fsync=0
+N	wall_ms	total	writes/sec
+1	151	4000	26382
+8	201	32000	159186
+32	480	128000	266283
+128	1702	512000	300802
+
+## WRITE throughput — candidate=per-file per-writer=4000 store=/dev/shm/bk-w fsync=0
+N	wall_ms	total	writes/sec
+1	226	4000	17697
+8	387	32000	82492
+32	1584	128000	80773
+128	6275	512000	81588
+
+## WRITE throughput — candidate=sqlite per-writer=4000 store=/dev/shm/bk-w fsync=0
+N	wall_ms	total	writes/sec
+1	1156	4000	3457
+8	3922	32000	8157
+32	11607	128000	11027
+128	43425	512000	11790
+
+## WRITE throughput — candidate=baseline-APPEND-FLOOR (in-process bare monitor+append+flush; NO coordinator semantics)
+## Illuminating ONLY as "what the lock alone costs" — crit-section too cheap to show the real convoy. NOT the baseline.
+N	wall_ms	total	writes/sec
+1	81	4000	49218
+8	847	32000	37743
+32	5637	128000	22703
+128	15105	512000	33895
+
+## WRITE throughput — candidate=baseline-REAL (coord_load.clj; the actual commit! path: name-resolve+OCC+delta+fsync-in-lock)
+## THE AUTHORITATIVE BASELINE. Different subjects (no OCC conflict) => pure global-lock serialization, the kindest case.
+## per-writer=150 (heavier path); reproduces RESULTS.md anchor 951->151 as 1139->213 on this box. ANTI-SCALES.
+N	wall_ms	total	writes/sec
+1	131	150	1139
+4	814	600	736
+16	6965	2400	344
+32	22478	4800	213
