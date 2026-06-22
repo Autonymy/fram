@@ -1,0 +1,181 @@
+#!/usr/bin/env bb
+;; ============================================================================
+;; fram-code-author — WATCH AN AGENT WRITE A PROGRAM AS A GRAPH.
+;; ============================================================================
+;; The agent-authoring endgame. fram-replay-code streams pre-baked CLAIMS into a
+;; daemon with timing (a program MATERIALIZING); this streams authoring VERBS with
+;; timing (a program being WRITTEN). Each step is a rename / set-body / upsert-form
+;; / insert-form / insert-comment that lands as a MINIMAL-OP :edit-min delta through
+;; the live daemon (via bin/fram-edit-code) — NO text file touched, NO whole-module
+;; churn. A referenced-def rename is ~2 ops (one edge spelling), not a text rescan.
+;; Point framescope at the port and the graph moves verb-by-verb.
+;;
+;; USAGE:
+;;   bin/fram-code-author --script <steps.edn> [--port 7979] [--pace 1.5]
+;;                        [--boot <seed.bclj>] [--module <default-mod>]
+;;
+;;   --script  EDN vector of step maps (inline forms — NO temp files for the author):
+;;       {:op "upsert-form"    :module "greet" :form (def salutation :- String "Howdy") :note "..."}
+;;       {:op "set-body"       :module "greet" :name "greet" :body (str salutation " " who)}
+;;       {:op "rename"         :module "greet" :old "base" :new "prefix"}
+;;       {:op "insert-form"    :module "greet" :after "greet" :form (defn shout ...)}
+;;       {:op "insert-comment" :module "greet" :after "greet" :text "..." :placement "leading"}
+;;     :module falls back to --module; :note is the narration line.
+;;   --boot    ingest <seed.bclj> into a gate-passing $PWD/.fram/author-<mod>-code.log,
+;;             (re)boot bin/fram-daemon on --port, wait up. Self-contained demo: the
+;;             agent starts from the seed and authors the rest live. Stops any daemon
+;;             tracked at .fram/code-daemon-<port>.pid first.
+;;   --pace    seconds between verbs (default 1.5) so the graph moves legibly.
+;;
+;; SAFETY: the port must serve a *code.log (fram-edit-code's :edit-min gate asserts
+;; this; we pre-check for a clear early error). NEVER the lodestar coordinator.
+;; ============================================================================
+(require '[clojure.string :as str]
+         '[clojure.java.io :as io]
+         '[clojure.edn :as edn]
+         '[babashka.process :as proc])
+(import '[java.net Socket InetSocketAddress])
+
+(defn- die [& xs] (binding [*out* *err*] (apply println xs)) (System/exit 1))
+(defn- log! [& xs] (binding [*out* *err*] (apply println xs)))
+
+(def ^:private cwd (System/getProperty "user.dir"))
+(def ^:private bin-dir (str cwd "/bin"))
+(def ^:private fram-out (str cwd "/out"))
+
+(defn- parse-args [args]
+  (loop [a args opts {:script nil :port 7979 :pace 1.5 :boot nil :module nil}]
+    (cond
+      (empty? a) opts
+      (= "--script" (first a)) (recur (drop 2 a) (assoc opts :script (second a)))
+      (= "--port" (first a))   (recur (drop 2 a) (assoc opts :port (Integer/parseInt (second a))))
+      (= "--pace" (first a))   (recur (drop 2 a) (assoc opts :pace (Double/parseDouble (second a))))
+      (= "--boot" (first a))   (recur (drop 2 a) (assoc opts :boot (second a)))
+      (= "--module" (first a)) (recur (drop 2 a) (assoc opts :module (second a)))
+      :else (recur (rest a) opts))))
+
+;; one-shot EDN request to the coordinator (same wire fram-edit-code uses).
+(defn- coord [port req]
+  (try
+    (with-open [s (Socket.)]
+      (.connect s (InetSocketAddress. "127.0.0.1" (int port)) 2000)
+      (let [w (io/writer (.getOutputStream s)) rd (io/reader (.getInputStream s))]
+        (.write w (str (pr-str req) "\n")) (.flush w)
+        (edn/read-string (.readLine rd))))
+    (catch Exception _ nil)))
+
+(defn- version-of [port] (:version (coord port {:op :version})))
+(defn- daemon-up? [port] (some? (version-of port)))
+
+;; ---- self-contained boot (--boot): ingest seed -> gate-passing log -> daemon ----
+(defn- module-of-seed [seed] (str/replace (.getName (io/file seed)) #"\.bclj$" ""))
+
+(defn- boot! [seed port]
+  (when-not (.exists (io/file seed)) (die "no seed .bclj:" seed))
+  (let [mod (module-of-seed seed)
+        glog (str cwd "/.fram/author-" mod "-code.log")          ; *code.log => passes the verb-path gate
+        pidf (str cwd "/.fram/code-daemon-" port ".pid")
+        dlog (str cwd "/.fram/code-daemon-" port ".log")]
+    ;; stop a daemon we previously tracked on this port (don't kill an untracked one blindly).
+    (when (.exists (io/file pidf))
+      (let [pid (str/trim (slurp pidf))]
+        (try (proc/sh "kill" pid) (catch Exception _ nil))
+        (.delete (io/file pidf))
+        (log! "fram-code-author: stopped tracked daemon on :" port " (pid " pid ")"))
+      (Thread/sleep 600))
+    (when (daemon-up? port)
+      (die "fram-code-author: a daemon is STILL up on :" port " and not ours to stop — pick a free --port"))
+    (log! "fram-code-author: ingesting" seed "-> " glog)
+    (let [r (proc/sh {:err :string} (str bin-dir "/fram-ingest-code") seed "--out" glog)]
+      (when-not (zero? (:exit r)) (die "ingest FAILED:\n" (:err r))))
+    (log! "fram-code-author: launching daemon on :" port " over " glog)
+    ;; detach: nohup so the daemon outlives this bb process (the script just drives verbs).
+    (proc/process ["nohup" (str bin-dir "/fram-daemon") (str port) glog]
+                  {:out (io/file dlog) :err (io/file dlog)
+                   :extra-env {"_" "1"} :shutdown nil})
+    (spit pidf "")                                                ; placeholder; real pid below
+    ;; nohup backgrounds; grab the daemon pid by polling for up, then record from pgrep-free path.
+    (loop [i 0]
+      (cond
+        (daemon-up? port) (log! "fram-code-author: :" port " up.")
+        (> i 80) (die "fram-code-author: :" port " TIMEOUT — see " dlog)
+        :else (do (Thread/sleep 500) (recur (inc i)))))
+    mod))
+
+;; ---- per-step verb invocation via fram-edit-code (the :edit-min minimal path) ----
+(defn- tmp-edn! [form]
+  (let [f (java.io.File/createTempFile "fram-author-" ".edn")]
+    (spit f (str (pr-str form) "\n")) (.deleteOnExit f) (.getPath f)))
+
+(defn- flags-for [step]
+  (let [{:keys [op name old new after text placement form body]} step]
+    (case op
+      "rename"         ["--old" old "--new" new]
+      "set-body"       ["--name" name "--body-file" (tmp-edn! body)]
+      "upsert-form"    ["--spec-file" (tmp-edn! form)]
+      "insert-form"    ["--after" after "--spec-file" (tmp-edn! form)]
+      "insert-comment" (concat ["--after" after "--text" text]
+                               (when placement ["--placement" placement]))
+      (die "unknown step op:" op))))
+
+(def ^:private receipt-re
+  #"committed (\d+) ops \((\d+) assert / (\d+) retract; (\d+) new node\(s\)\).*version -> (\d+)")
+
+(defn- run-step! [port step]
+  (let [op (:op step)
+        module (or (:module step) (:module step))
+        flags (flags-for step)
+        v0 (version-of port)
+        r (apply proc/sh {:err :string :out :string :extra-env (into {} (System/getenv))}
+                 "bb" "-cp" fram-out (str bin-dir "/fram-edit-code")
+                 op module (concat flags ["--port" (str port)]))
+        err (str (:out r) (:err r))
+        m (re-find receipt-re err)]
+    (if m
+      (let [[_ ops a rr nn vN] m]
+        {:ok true :op op :module module :ops ops :assert a :retract rr :new nn :v0 v0 :v1 vN})
+      {:ok false :op op :module module :v0 v0
+       :why (or (some->> (str/split-lines err)
+                         (filter #(re-find #"REJECT|SAFETY|error|REJECTED" %)) first str/trim)
+                (str/trim err))})))
+
+;; ---------------------------------------------------------------------------
+(let [{:keys [script port pace boot module]} (parse-args (vec *command-line-args*))]
+  (when (str/blank? script) (die "usage: bin/fram-code-author --script <steps.edn> [--port P] [--pace S] [--boot seed.bclj] [--module M]"))
+  (when-not (.exists (io/file script)) (die "no script:" script))
+  (let [steps (edn/read-string (slurp script))]
+    (when-not (vector? steps) (die "script must be an EDN vector of step maps"))
+    (when boot (boot! boot port))
+    (when-not (daemon-up? port)
+      (die "fram-code-author: no code daemon on :" port " (use --boot <seed.bclj> to stand one up)"))
+    ;; SAFETY pre-check: refuse anything but a *code.log (mirrors fram-edit-code's gate).
+    (let [dlog (str (:log (coord port {:op :status})))]
+      (when-not (str/includes? dlog "code.log")
+        (die "fram-code-author: SAFETY — :" port " serves" dlog "— NOT a *code.log; refusing")))
+    (log! (str "\n  ┌─ AGENT AUTHORING  →  :" port "  (" (count steps) " verbs, " pace "s pace) ─────────"))
+    (log! (str "  │  watch:  framescope :8088/?port=" port "   (Graph tab)"))
+    (log! "  └──────────────────────────────────────────────────────────────────")
+    (let [results
+          (doall
+           (map-indexed
+            (fn [i raw]
+              (let [step (update raw :module #(or % module))]
+                (when (str/blank? (:module step))
+                  (die "step" (inc i) "has no :module and no --module default"))
+                (let [res (run-step! port step)]
+                  (if (:ok res)
+                    (log! (format "  ● [%d/%d] %-13s @%-8s %3s ops (%sa/%sr, %s new)  v%s→v%s   %s"
+                                   (inc i) (count steps) (:op res) (:module res)
+                                   (:ops res) (:assert res) (:retract res) (:new res)
+                                   (:v0 res) (:v1 res) (or (:note step) "")))
+                    (log! (format "  ✗ [%d/%d] %-13s @%-8s REJECTED — %s"
+                                   (inc i) (count steps) (:op res) (:module res) (:why res))))
+                  (when (< (inc i) (count steps)) (Thread/sleep (long (* 1000 pace))))
+                  res)))
+            steps))
+          ok (count (filter :ok results))
+          v0 (:v0 (first results)) v1 (:v1 (last (filter :ok results)))]
+      (log! (str "\n  └─ DONE — " ok "/" (count steps) " verbs landed; daemon v" v0 " → v" v1
+                 "  (the program was written as a graph; the log is canonical)"))
+      (println (str "{:landed " ok " :of " (count steps) " :port " port " :v0 " v0 " :v1 " v1 "}"))
+      (System/exit (if (= ok (count steps)) 0 2)))))

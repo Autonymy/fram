@@ -1,0 +1,33 @@
+;; author-greet.edn — a scripted AGENT-AUTHORING session over the `greet` module.
+;; Drive with:  bin/fram-code-author --script experiments/authoring-harness/author-greet.edn \
+;;                                    --boot experiments/authoring-harness/greet.bclj --port 7979
+;; Each step is a graph verb that lands as a MINIMAL-OP :edit-min delta. Watch the
+;; program get WRITTEN node-by-node in framescope (:8088/?port=7979). Seed corpus:
+;;   (def base :- String "hello")
+;;   (defn greet [who :- String] :- String (str base " " who))
+[
+ ;; 1. The HEADLINE — rename a REFERENCED def. `greet` mentions `base`; renaming it
+ ;;    is one edge-spelling change (~2 ops), and greet's reference reconstructs to the
+ ;;    new name for free. Text would rescan + rewrite every mention; the graph re-spells one edge.
+ {:op "rename"      :module "greet" :old "base" :new "prefix"
+  :note "rename a referenced def — the reference reconstructs (graph, not rescan)"}
+
+ ;; 2. The agent writes a brand-new top-level def.
+ {:op "upsert-form" :module "greet" :form (def salutation :- String "Howdy")
+  :note "author a new def — salutation"}
+
+ ;; 3. The agent rewrites greet's body to compose BOTH defs — two reference edges minted.
+ {:op "set-body"    :module "greet" :name "greet" :body (str prefix ", " salutation " " who)
+  :note "rewrite greet's body to compose prefix + salutation"}
+
+ ;; 4. CRDT mid-insert: a new def placed AFTER greet (concurrent inserts after the same
+ ;;    anchor would commute). References greet — another edge.
+ {:op "insert-form" :module "greet" :after "greet"
+  :form (defn shout [who :- String] :- String (str (greet who) "!"))
+  :note "insert shout after greet — CRDT mid-insert, references greet"}
+
+ ;; 5. The agent annotates its own work — a leading comment authored straight into the graph.
+ {:op "insert-comment" :module "greet" :after "greet" :placement "leading"
+  :text "authored live by the agent, as a graph"
+  :note "annotate greet with a leading comment node"}
+]
