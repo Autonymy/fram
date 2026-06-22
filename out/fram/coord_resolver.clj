@@ -211,3 +211,107 @@
    ground (refers-keyset clone)
    symdiff (set/union (set/difference scoped ground) (set/difference ground scoped))]
   {:scoped-size (count scoped) :ground-size (count ground) :symdiff-size (count symdiff) :symdiff (vec (take 40 symdiff)) :version (cd/cur-seq)}))
+
+(defn- persist-bound-for-rename! [spec]
+  (ensure-refers!)
+  (let [co0 (deref cd/co)
+   st (:store co0)
+   REFp (c/value-id st "refers_to")
+   B (target-node {:module (:module spec) :name (:old spec)})]
+  (if (some? B) (if (some? REFp) (let [Bn B
+   REFpn REFp
+   B-name0 (s/name-of st Bn)]
+  (if (some? B-name0) (let [B-name B-name0
+   BND (or (c/value-id st "bound_to") (c/value! st "bound_to"))
+   v0 (cd/cur-seq)
+   already (set (keep (fn [cid] (let [c0 (c/claim-of st cid)]
+  (if (some? c0) (let [l (:l c0)]
+  l) nil))) (c/by-p st BND)))
+   ref-leaves (vec (distinct (keep (fn [cid] (let [c0 (c/claim-of st cid)]
+  (if (some? c0) (if (= Bn (:r c0)) (let [l (:l c0)]
+  l) nil) nil))) (c/by-p st REFpn))))]
+  (doseq [leaf ref-leaves]
+  (let [lnm (s/name-of st leaf)]
+  (if (and (not (contains? already leaf)) (some? lnm)) (cd/do-assert! lnm "bound_to" B-name v0) nil)))) nil)) nil) nil)))
+
+(defn do-edit-min! [spec]
+  (let [module (:module spec)]
+  (if (str/blank? (let [ms module]
+  ms)) (throw (ex-info "edit-min: :module required" {})) nil)
+  (let [op (:op spec)]
+  (if (not (contains? #{"set-body" "upsert-form" "insert-form" "insert-comment" "rename"} op)) (throw (ex-info (str "edit-min: unknown verb '" op "' (known: set-body, upsert-form, insert-form, insert-comment, rename)") {:reject :unknown-verb})) nil))
+  (let [mod module
+   op (:op spec)
+   co0 (deref cd/co)
+   real (:store co0)
+   clone (atom (deref real))
+   since (:next-id (let [c0 (deref clone)]
+  c0))
+   scope? (contains? #{"set-body" "upsert-form" "insert-form"} op)
+   scope (if scope? (fn [str0] (str/includes? str0 mod)) (let [x nil]
+  x))
+   _res (binding [r/*reject!* (fn [code] (throw (ex-info (str "verb rejected the edit (code " code ")") {:reject :verb :code code})))
+   r/*capture-only?* true
+   r/*resolve-walk?* false
+   r/*corpus-scope* scope
+   r/*corpus-cache* (if scope? (ensure-corpus-groups! mod) (let [x nil]
+  x))]
+  (r/run-verb-warm! clone spec))
+   m (deref clone)
+   sup-pid (:supersedes-pred m)
+   since-ids (vec (range (inc since) (inc (:next-id m))))
+   name-of* (fn [eid] (s/name-of clone eid))
+   new-eids (vec (filter (fn [id] (and (contains? (:objects m) id) (not (contains? (:values m) id)) (not (contains? (:claims m) id)) (nil? (name-of* id)))) since-ids))
+   name-ints (cd/reserve-name-ints! (count new-eids))
+   eid->name (into (let [e {}]
+  e) (map-indexed (fn [i eid] [eid (str "@" mod "#" (nth name-ints i))]) new-eids))
+   wire-name (fn [eid] (let [nm (get eid->name eid)]
+  (if (some? nm) nm (name-of* eid))))
+   ->wire (fn [cl] (let [l (:l cl)
+   p (c/literal clone (let [pid (:p cl)]
+  pid))
+   r (:r cl)
+   te (wire-name l)
+   rs (if (c/value-object? clone r) (c/literal clone r) (wire-name r))]
+  (if (and (some? te) (some? rs)) [te p rs] (let [x nil]
+  x))))
+   new-cid-claims (vec (keep (fn [cid] (let [cl (get (:claims m) cid)]
+  (if (some? cl) [cid cl] (let [x nil]
+  x)))) since-ids))
+   new-claims (vec (filter (fn [cl] (cd/ast-pred-str? (c/literal clone (let [pid (:p cl)]
+  pid)))) (map (fn [pr] (let [cl (nth pr 1)]
+  cl)) new-cid-claims)))
+   asserts (vec (keep ->wire new-claims))
+   victim-cids (vec (keep (fn [pr] (let [cl (nth pr 1)]
+  (if (= (:p cl) sup-pid) (let [r0 (:r cl)]
+  r0) (let [x nil]
+  x)))) new-cid-claims))
+   retracts (vec (keep (fn [vcid] (let [vcl (get (:claims m) vcid)]
+  (if (some? vcl) (if (cd/ast-pred-str? (c/literal clone (let [pid (:p vcl)]
+  pid))) (->wire vcl) (let [x nil]
+  x)) (let [y nil]
+  y)))) victim-cids))]
+  (cd/with-dlock! (fn [] (if (= "rename" op) (persist-bound-for-rename! spec) nil)
+  (let [v0 (cd/cur-seq)
+   asserts2 (cd/allocate-positions asserts)
+   rej (atom (let [x nil]
+  x))]
+  (binding [cd/*flat-batch* (atom (let [v []]
+  v))]
+  (reduce (fn [_acc trip] (if (some? (deref rej)) (reduced _acc) (let [te (nth trip 0)
+   p (nth trip 1)
+   r (nth trip 2)
+   res (cd/do-retract! te p r v0)]
+  (if (some? (:reject res)) (reset! rej {:op :retract :te te :p p :r r :res res}) nil)))) (let [n0 nil]
+  n0) retracts)
+  (let [leaf? (fn [trip] (contains? #{"kind" "v"} (nth trip 1)))
+   ordered (vec (concat (filter leaf? asserts2) (remove leaf? asserts2)))]
+  (reduce (fn [_acc trip] (if (some? (deref rej)) (reduced _acc) (let [te (nth trip 0)
+   p (nth trip 1)
+   r (nth trip 2)
+   res (cd/do-assert! te p r v0)]
+  (if (some? (:reject res)) (reset! rej {:op :assert :te te :p p :r r :res res}) nil)))) (let [n0 nil]
+  n0) ordered))
+  (cd/flush-flat-batch!))
+  (let [rj (deref rej)]
+  (if (some? rj) {:reject (:res rj) :failed-op rj :module mod} {:ok true :module mod :asserts (count asserts2) :retracts (count retracts) :ops (+ (count asserts2) (count retracts)) :new-nodes (count new-eids) :name-ints name-ints :version (cd/cur-seq)}))))))))

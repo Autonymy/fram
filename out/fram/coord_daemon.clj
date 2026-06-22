@@ -242,6 +242,11 @@
 
 (def node-name-seq (atom 0))
 
+(def dlock (rt/new-monitor))
+
+(defn with-dlock! [thunk]
+  (rt/with-lock dlock thunk))
+
 (def ^:dynamic *flat-batch* nil)
 
 (defn cur-seq []
