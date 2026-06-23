@@ -384,6 +384,10 @@
 ;; consistent with the migrated store.
 (defn- kind-of [r] (if (and (string? r) (ref-shape? r)) :link :assert))
 
+;; forward ref: the-model §9 cascade is defined after do-retract (it calls both
+;; do-retract + do-assert), but do-assert calls it — declare so SCI resolves it.
+(declare terminal-cascade!)
+
 ;; reserved engine predicates (identity + metadata) — a DOMAIN write to one would
 ;; collide with the reified schema layer and silently corrupt; reject at the boundary.
 (defn- do-assert [te p r base]
@@ -397,6 +401,14 @@
               (apply-commit-delta! pre te p)
               (mark-dirty! te))                    ; S3.3: this module's refers_to are stale
             (notify-subs! {:event :commit :version (:ok res) :op "assert" :l te :p p :r r})
+            ;; the-model §9: a successful, non-idempotent terminal transition
+            ;; (outcome|abandoned) cascades in the SAME serialized turn — retract
+            ;; any live driver and close any running clock session. Routes through
+            ;; do-retract/do-assert so each cascade write inherits append-flat! +
+            ;; notify-subs! + OCC. Idempotent on replay (a 2nd terminal assert is
+            ;; :idempotent => skipped; a driver-free, clock-free thread no-ops).
+            (when (and (not (:idempotent res)) (ck/vec-contains? ck/terminal-preds p))
+              (terminal-cascade! te))
             {:ok (:ok res)})
         {:reject (:reject res) :version (:version res)}))))
 
@@ -412,6 +424,59 @@
             (notify-subs! {:event :commit :version (:ok res) :op "retract" :l te :p p :r r})
             {:ok (:ok res)})
         {:reject (:reject res) :version (:version res)}))))
+
+;; the-model §9 — atomic terminal-transition cascade. Called by do-assert AFTER a
+;; successful, non-idempotent terminal assert (outcome|abandoned). Runs INSIDE the
+;; same serialized coordinator turn (do-assert holds no extra lock here; the
+;; cascade writes re-acquire the reentrant (:lock co) via do-retract/do-assert):
+;;   (1) DRIVER — a thread that has resolved is no longer being driven; retract any
+;;       live driver cell on te.
+;;   (2) CLOCK — any running session ON te (session_of -> te, with a live start_time
+;;       and NO live end_time) is closed by asserting end_time now.
+;; Both route through the EXISTING do-retract/do-assert so they inherit append-flat!
+;; + notify-subs! + OCC. Idempotent on replay: a 2nd terminal assert is :idempotent
+;; (cascade skipped), and a driver-free / clock-free thread no-ops here.
+;; a single live LITERAL value on (sid-name, p), or nil — the post-commit state of
+;; one single-valued group, read straight off the reified store (no fold).
+(defn- one-live-literal [sid p]
+  (let [st  (:store @co)
+        lid (s/resolve-name st sid)
+        pid (c/value-id st p)]
+    (when (and lid pid)
+      (let [cids (live-cids-lp @co lid pid)]
+        (when (seq cids)
+          (let [cl (c/claim-of st (first cids))]
+            (when cl (c/literal st (:r cl)))))))))
+
+(defn- terminal-cascade! [te]
+  (let [st (:store @co)]
+    ;; (1) driver — a resolved thread is no longer being driven. Read the live
+    ;; driver value and pass it as `r`: retract! clears the whole single-valued
+    ;; group regardless of r, but a flat-log retract line MUST carry a non-nil r
+    ;; (fold drops :r nil as a torn line — see fram.fold), or the clear would not
+    ;; survive a cold re-fold.
+    (let [eid (s/resolve-name st te)
+          did (c/value-id st "driver")
+          live-driver (let [cids (when (and eid did) (live-cids-lp @co eid did))]
+                        (when (seq cids)
+                          (let [cl (c/claim-of st (first cids))]
+                            (when cl
+                              (if (c/value-object? st (:r cl))
+                                (c/literal st (:r cl))
+                                (s/name-of st (:r cl)))))))]
+      (when (some? live-driver)
+        (do-retract te "driver" live-driver (current-seq @co))))
+    ;; (2) running clock sessions on te (session_of -> te, live start_time, no end_time).
+    (let [te-eid (s/resolve-name st te)
+          sof    (c/value-id st "session_of")]
+      (when (and te-eid sof)
+        (doseq [scid (vec (c/by-pr st sof te-eid))]
+          (let [cl (c/claim-of st scid)
+                sid (when cl (s/name-of st (:l cl)))]
+            (when (and sid
+                       (some? (one-live-literal sid "start_time"))
+                       (nil? (one-live-literal sid "end_time")))
+              (do-assert sid "end_time" (fram.rt/now-iso) (current-seq @co)))))))))
 
 ;; §1.2: ready/blocked/leverage are DOMAIN projections — the engine no longer
 ;; serves them. The CLI/MCP fold the log locally (main/cmd-ready, cmd-json), so
@@ -1083,6 +1148,14 @@
       :version  {:version (current-seq @co)}
       :assert   (do-assert (:te req) (:p req) (:r req) (:base req))
       :retract  (do-retract (:te req) (:p req) (:r req) (:base req))
+      ;; --- exclusive-lease wire verbs (agents lease @lease:<res> over the socket) ---
+      ;; The lease fn enforces mutual exclusion in its OWN (:lock co); the outer dlock just
+      ;; serializes with other daemon ops. A bare :assert @lease:<res> is the UNSAFE lost-update
+      ;; path the lease arm exists to close — agents MUST use these. No notify-subs! (lease
+      ;; changes are not broadcast), matching the fram-lease fork. Impl: cnf_coord.clj (load-file'd).
+      :acquire-lease (acquire-lease! @co (:holder req) (:res req) (:ttl-ms req))
+      :release-lease (release-lease! @co (:holder req) (:res req))
+      :fence-ok      {:fence-ok (fence-ok? @co (:res req) (:holder req) (:epoch req))}
       ;; :edit-min is handled ABOVE, outside the outer dlock (socket exposure) — see top of handle.
       :validate {:violations (all-violations (index!))}
       ;; AST/Datalog query over the WARM in-memory graph — the read surface the cold
