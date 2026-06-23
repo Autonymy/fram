@@ -5,7 +5,7 @@
   (if (and (some? env) (not (= env ""))) (vec (str/split env #"\s+")) ["title" "owner" "lead" "driver" "source" "part_of" "do_on" "valid_until" "estimate_hours" "created_at" "updated_at" "name" "body" "created_by" "committed" "outcome" "abandoned" "superseded_by" "merged_into" "session_of" "start_time" "end_time" "clockify_id"])))
 
 (def terminal-preds (let [env (System/getenv "FRAM_TERMINAL_PREDS")]
-  (if (and (some? env) (not (= env ""))) (vec (str/split env #"\s+")) ["outcome" "abandoned"])))
+  (if (and (some? env) (not (= env ""))) (vec (str/split env #"\s+")) ["outcome" "abandoned" "superseded_by"])))
 
 (def withdrawn-preds (let [env (System/getenv "FRAM_WITHDRAWN_PREDS")]
   (if (and (some? env) (not (= env ""))) (vec (str/split env #"\s+")) ["abandoned"])))
@@ -99,8 +99,11 @@
    v3 (if (and (some? pa) (not (vec-contains? ids pa))) (conj v2 (str "part_of references missing entity " pa)) v2)
    v5 (if (cycle? claims "depends_on" te) (conj v3 "depends_on cycle") v3)
    v6 (if (cycle? claims "part_of" te) (conj v5 "part_of cycle") v5)
-   v7 (reduce (fn [acc p] (reduce (fn [a rt] (if (not (vec-contains? ids rt)) (conj a (str p " references missing entity " rt)) a)) acc (many claims te p))) v6 ["relates_to" "clarifies" "amends"])]
-  v7))
+   v7 (reduce (fn [acc p] (reduce (fn [a rt] (if (not (vec-contains? ids rt)) (conj a (str p " references missing entity " rt)) a)) acc (many claims te p))) v6 ["relates_to" "clarifies" "amends"])
+   v8 (reduce (fn [acc p] (let [ref (one claims te p)]
+  (if (and (some? ref) (nil? (one claims ref "display_name"))) (conj acc (str p " references unknown person " ref)) acc))) v7 ["lead" "driver"])
+   v9 (reduce (fn [acc rt] (if (nil? (one claims rt "display_name")) (conj acc (str "proposed_by references unknown person " rt)) acc)) v8 (many claims te "proposed_by"))]
+  v9))
 
 (defrecord Index [single bypred subjects revdep])
 
@@ -130,7 +133,7 @@
   (filterv (fn [s] (some? (one-i idx s "title"))) (:subjects idx)))
 
 (defn ^Boolean anchor-i? [^Index idx ^String te]
-  (= (one-i idx te "source") "migrated"))
+  (and (some? (one-i idx te "title")) (and (some? (one-i idx te "committed")) (and (nil? (one-i idx te "outcome")) (and (nil? (one-i idx te "abandoned")) (and (nil? (one-i idx te "driver")) (and (empty? (many-i idx te "depends_on")) (and (nil? (one-i idx te "part_of")) (and (nil? (one-i idx te "do_on")) (and (nil? (one-i idx te "valid_until")) (and (nil? (one-i idx te "estimate_hours")) (and (nil? (one-i idx te "lead")) (and (empty? (many-i idx te "proposed_by")) (and (nil? (one-i idx te "created_at")) (and (nil? (one-i idx te "updated_at")) (nil? (one-i idx te "repo")))))))))))))))))
 
 (defn work-thread-ids-i [^Index idx]
   (filterv (fn [s] (not (anchor-i? idx s))) (thread-ids-i idx)))
@@ -158,5 +161,8 @@
    v3 (if (and (some? pa) (nil? (one-i idx pa "title"))) (conj v2 (str "part_of references missing entity " pa)) v2)
    v5 (if (cycle-i? idx "depends_on" te) (conj v3 "depends_on cycle") v3)
    v6 (if (cycle-i? idx "part_of" te) (conj v5 "part_of cycle") v5)
-   v7 (reduce (fn [acc p] (reduce (fn [a rt] (if (nil? (one-i idx rt "title")) (conj a (str p " references missing entity " rt)) a)) acc (many-i idx te p))) v6 ["relates_to" "clarifies" "amends"])]
-  v7))
+   v7 (reduce (fn [acc p] (reduce (fn [a rt] (if (nil? (one-i idx rt "title")) (conj a (str p " references missing entity " rt)) a)) acc (many-i idx te p))) v6 ["relates_to" "clarifies" "amends"])
+   v8 (reduce (fn [acc p] (let [ref (one-i idx te p)]
+  (if (and (some? ref) (nil? (one-i idx ref "display_name"))) (conj acc (str p " references unknown person " ref)) acc))) v7 ["lead" "driver"])
+   v9 (reduce (fn [acc rt] (if (nil? (one-i idx rt "display_name")) (conj acc (str "proposed_by references unknown person " rt)) acc)) v8 (many-i idx te "proposed_by"))]
+  v9))
