@@ -6,7 +6,7 @@
 lifecycle is *derived*, never stored; every write serializes through one coordinator;
 and the text is a **view** of the graph you can always walk away with.
 
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![license](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 [![status](https://img.shields.io/badge/status-early%2C%20experimental-orange.svg)](#what-it-isnt)
 [![runtime](https://img.shields.io/badge/CLI%20%2B%20MCP-babashka-success.svg)](https://babashka.org)
 [![daemon](https://img.shields.io/badge/coordinator-JVM%20%2B%20mTLS-informational.svg)](#multi-agent-safety)
