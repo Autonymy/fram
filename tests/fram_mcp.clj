@@ -272,14 +272,33 @@
               {:isError true :text (str "REJECTED (warm :edit-min, nothing committed): "
                                         (str/join "; " (map str (:reject resp))))}
               (:ok resp)
-              ;; render the downstream .bclj view WARM off the coordinator (:render op, no fold)
+              ;; render the .bclj view WARM (:render, no fold), then TYPE-CHECK the edited module +
+              ;; RETURN pointed Beagle errors so the agent can REPAIR (the beagle repair loop — without
+              ;; this the agent commits broken Beagle syntax + flies blind; WITH it, it fixes + lands green).
+              ;; No re-fold anywhere: render is warm off the coordinator; the check parses ONE module.
               (let [target-bclj (str fram-src "/" module ".bclj")
                     rr (apply sh {:out (io/file target-bclj) :err :string}
                               "bb" "-cp" fram-out (str flip-bin-dir "/fram-render-code")
                               module "--port" flip-code-port (flip-log-args))]
-                {:text (str "committed (WARM :edit-min, no re-fold): " op " on " module
-                            " — " (:ops resp) " ops"
-                            (when-not (zero? (:exit rr)) (str " (view-render warn: " (str/trim (:err rr)) ")")))})
+                (if-not (zero? (:exit rr))
+                  {:text (str "committed (WARM :edit-min): " op " on " module " — " (:ops resp)
+                              " ops (WARNING: view render failed: " (str/trim (:err rr)) ")")}
+                  (let [ednf (str target-bclj ".chk.edn")
+                        ee (sh {:out (io/file ednf) :err :string} "racket" roundtrip-rkt "--emit-edn" target-bclj)]
+                    (if-not (zero? (:exit ee))
+                      {:isError true
+                       :text (str "Your edit COMMITTED but module `" module "` no longer PARSES — the module "
+                                  "is now broken. Correct it by re-editing the same def with valid Beagle "
+                                  "(typed Clojure: `(defn f [x :- T] :- R body)`). Syntax error:\n" (str/trim (:err ee)))}
+                      (let [bg (sh {:out :string :err :string} "racket" check-emit-rkt ednf)]
+                        (try (io/delete-file (io/file ednf) true) (catch Throwable _ nil))
+                        (if (zero? (:exit bg))
+                          {:text (str "committed + TYPE-CHECKS CLEAN (WARM :edit-min, no re-fold): "
+                                      op " on " module " — " (:ops resp) " ops")}
+                          {:isError true
+                           :text (str "Your edit COMMITTED but module `" module "` does NOT TYPE-CHECK — "
+                                      "the module is now broken. Correct it by re-editing the same def. "
+                                      "Beagle type error:\n" (str/trim (str (:out bg) (:err bg))))}))))))
               :else
               {:isError true :text (str "warm :edit-min unexpected response: " (pr-str resp))}))))
 
