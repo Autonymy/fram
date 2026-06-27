@@ -24,12 +24,13 @@
        "created_by" "committed" "outcome" "abandoned" "superseded_by" "merged_into"
        "session_of" "start_time" "end_time" "clockify_id"])))
 
-;; Injected LIFECYCLE vocab (mirrors single-valued — the consumer declares it):
+;; LIFECYCLE vocab, env-injected (mirrors single-valued — the consumer declares it):
 ;; "terminal" = resolved (done/canceled); "withdrawn" = a depends_on target that's
-;; suspect to depend on. The kernel keeps the derivation MACHINERY but takes the
-;; predicate NAMES as config, so it carries no baked-in lifecycle vocab a consumer
-;; can't redefine. Defaults are byte-identical to pin 727feb5 (so the in-process
-;; Lodestar seam is unaffected); a consumer overrides via the env vars.
+;; suspect to depend on. The lifecycle DERIVATION (terminal?/terminal-i?) moved to
+;; lodestar.projections; the kernel keeps only this vocab, for the two engine-side
+;; consumers that still read it: the coordinator's the-model §9 terminal-cascade
+;; (cnf_coord_daemon) and the doctor vocab-fingerprint. Defaults are the lodestar
+;; lifecycle vocab; a consumer overrides via the env vars.
 (def terminal-preds :- (Vec String)
   (let [env :- Any (System/getenv "FRAM_TERMINAL_PREDS")]
     (if (and (some? env) (not (= env "")))
@@ -124,14 +125,12 @@
 (defn many [claims :- (Vec Claim) l :- String p :- String] :- (Vec String)
   (mapv (fn [c :- Claim] :- String (:r c)) (q-lp claims l p)))
 
-;; terminal = resolved: any of the injected terminal-preds (default outcome/abandoned).
-(defn- any-of? [claims :- (Vec Claim) te :- String preds :- (Vec String)] :- Bool
-  (loop [ps preds]
-    (if (empty? ps) false
-      (if (some? (one claims te (first ps))) true (recur (rest ps))))))
-
-(defn terminal? [claims :- (Vec Claim) te :- String] :- Bool
-  (any-of? claims te terminal-preds))
+;; NOTE: lifecycle DERIVATION (`terminal?`/`terminal-i?` and their `any-of?`
+;; helpers) moved OUT to lodestar.projections — deriving "resolved" from
+;; outcome/abandoned is WORK semantics, not a structural engine concern. The
+;; engine stores the lifecycle claims and keeps the `terminal-preds`/
+;; `withdrawn-preds` vocab (the coordinator's the-model §9 terminal-cascade and
+;; the doctor vocab-fingerprint still read it), but no longer DERIVES from it.
 
 (defn- uniq [xs :- (Vec String)] :- (Vec String)
   (reduce (fn [acc :- (Vec String) x :- String] :- (Vec String)
@@ -190,17 +189,17 @@
 
 ;; --- obligation rules ------------------------------------------------------
 
+;; GENERIC structural integrity only (cycles + dangling refs). The WORK rules
+;; (depends_on→abandoned, and lead/driver/proposed_by must be a display_name
+;; person) moved to lodestar.validate — the engine knows no lifecycle or
+;; person/role vocab.
 (defn violations [claims :- (Vec Claim) te :- String] :- (Vec String)
   (let [ids (thread-ids claims)
         v2 (reduce
             (fn [acc :- (Vec String) d :- String] :- (Vec String)
-              (let [a (if (not (vec-contains? ids d))
-                        (conj acc (str "depends_on references missing entity " d))
-                        acc)]
-                (if (and (not (terminal? claims te))
-                         (any-of? claims d withdrawn-preds))
-                  (conj a (str "depends_on points at abandoned " d))
-                  a)))
+              (if (not (vec-contains? ids d))
+                (conj acc (str "depends_on references missing entity " d))
+                acc))
             []
             (many claims te "depends_on"))
         pa (one claims te "part_of")
@@ -209,8 +208,6 @@
              v2)
         v5 (if (cycle? claims "depends_on" te) (conj v3 "depends_on cycle") v3)
         v6 (if (cycle? claims "part_of" te) (conj v5 "part_of cycle") v5)
-        ;; relates_to is loose relatedness: target must be a real thread (no
-        ;; dangling concept-in-the-clouds), but cycles are fine and expected.
         ;; relates_to / clarifies / amends are all loose thread-ref edges: target
         ;; must be a real thread (no cycle constraint).
         v7 (reduce
@@ -221,26 +218,8 @@
                           a))
                       acc (many claims te p)))
             v6
-            ["relates_to" "clarifies" "amends"])
-        ;; person-ref integrity (mirror of violations-i): lead/driver/proposed_by
-        ;; must point at a node with a `display_name` claim. 'references unknown person'.
-        ;; (`name` is a RESERVED engine/schema predicate, so persons use display_name.)
-        v8 (reduce
-            (fn [acc :- (Vec String) p :- String] :- (Vec String)
-              (let [ref (one claims te p)]
-                (if (and (some? ref) (nil? (one claims ref "display_name")))
-                  (conj acc (str p " references unknown person " ref))
-                  acc)))
-            v7
-            ["lead" "driver"])
-        v9 (reduce
-            (fn [acc :- (Vec String) rt :- String] :- (Vec String)
-              (if (nil? (one claims rt "display_name"))
-                (conj acc (str "proposed_by references unknown person " rt))
-                acc))
-            v8
-            (many claims te "proposed_by"))]
-    v9))
+            ["relates_to" "clarifies" "amends"])]
+    v7))
 
 ;; --- indexed query layer (O(1) lookups, built once) -------------------------
 ;; The (Vec Claim) API above is O(n) per lookup — fine for write-time validation,
@@ -278,45 +257,13 @@
 (defn thread-ids-i [idx :- Index] :- (Vec String)
   (filterv (fn [s :- String] :- Bool (some? (one-i idx s "title"))) (:subjects idx)))
 
-;; A grouping anchor: a node synthesized only to be a relates_to target (former
-;; tags), never authored work. It's a valid edge target (validation still sees
-;; it) but NOT actionable, so WORK projections exclude it. The discriminator is
-;; STRUCTURAL — the shape of the node, NOT a `source "migrated"` value (which
-;; the-model.md drops as history-not-fact). An anchor is a titled, committed node
-;; that carries NO work axis at all: none of the completion / activity / blocked /
-;; schedule / composition / planning / accountability / provenance / chronology /
-;; navigation predicates. Verified (census5/census6) to match the 231 former-tag
-;; anchors EXACTLY — the 6 real threads that are also relates_to targets carry
-;; outcome/driver/part_of/estimate_hours, so they are correctly NOT anchored.
-(defn anchor-i? [idx :- Index te :- String] :- Bool
-  (and (some? (one-i idx te "title"))
-       (and (some? (one-i idx te "committed"))
-            (and (nil? (one-i idx te "outcome"))
-                 (and (nil? (one-i idx te "abandoned"))
-                      (and (nil? (one-i idx te "driver"))
-                           (and (empty? (many-i idx te "depends_on"))
-                                (and (nil? (one-i idx te "part_of"))
-                                     (and (nil? (one-i idx te "do_on"))
-                                          (and (nil? (one-i idx te "valid_until"))
-                                               (and (nil? (one-i idx te "estimate_hours"))
-                                                    (and (nil? (one-i idx te "lead"))
-                                                         (and (empty? (many-i idx te "proposed_by"))
-                                                              (and (nil? (one-i idx te "created_at"))
-                                                                   (and (nil? (one-i idx te "updated_at"))
-                                                                        (nil? (one-i idx te "repo")))))))))))))))))
+;; NOTE: `anchor-i?` / `work-thread-ids-i` (the WORK-thread set — anchors excluded)
+;; moved OUT to lodestar.projections. They are WORK semantics (which titled nodes
+;; are actionable work vs grouping anchors), not a structural engine concern, and
+;; had zero fram callers. The engine keeps only the structural `thread-ids-i`.
 
-;; thread ids that are actual work (anchors excluded) — the basis for plate/
-;; ready/next/leverage/agenda. validate keeps using thread-ids-i (sees anchors).
-(defn work-thread-ids-i [idx :- Index] :- (Vec String)
-  (filterv (fn [s :- String] :- Bool (not (anchor-i? idx s))) (thread-ids-i idx)))
-
-(defn- any-of-i? [idx :- Index te :- String preds :- (Vec String)] :- Bool
-  (loop [ps preds]
-    (if (empty? ps) false
-      (if (some? (one-i idx te (first ps))) true (recur (rest ps))))))
-
-(defn terminal-i? [idx :- Index te :- String] :- Bool
-  (any-of-i? idx te terminal-preds))
+;; `terminal-i?` / `any-of-i?` (indexed lifecycle derivation) also moved to
+;; lodestar.projections — see the flat `terminal?` note above.
 
 (defn dependents-i [idx :- Index te :- String] :- (Vec String)
   (get (:revdep idx) te []))
@@ -333,16 +280,15 @@
                  (many-i idx x "depends_on")))]
     (reachable-from? succ (succ te) te)))
 
+;; GENERIC structural integrity only (cycles + dangling refs), mirroring the flat
+;; `violations`. The WORK rules (depends_on→abandoned, person/role refs) moved to
+;; lodestar.validate/work-violations-i.
 (defn violations-i [idx :- Index te :- String] :- (Vec String)
-  (let [term? (terminal-i? idx te)
-        v2 (reduce
+  (let [v2 (reduce
             (fn [acc :- (Vec String) d :- String] :- (Vec String)
-              (let [a (if (nil? (one-i idx d "title"))
-                        (conj acc (str "depends_on references missing entity " d))
-                        acc)]
-                (if (and (not term?) (any-of-i? idx d withdrawn-preds))
-                  (conj a (str "depends_on points at abandoned " d))
-                  a)))
+              (if (nil? (one-i idx d "title"))
+                (conj acc (str "depends_on references missing entity " d))
+                acc))
             []
             (many-i idx te "depends_on"))
         pa (one-i idx te "part_of")
@@ -359,26 +305,5 @@
                           a))
                       acc (many-i idx te p)))
             v6
-            ["relates_to" "clarifies" "amends"])
-        ;; person-ref integrity (the-model §2): lead/driver/proposed_by must point
-        ;; at a node with a `display_name` claim (the person/agent kind; `name` is a
-        ;; RESERVED engine/schema predicate). A dangling ref
-        ;; surfaces with 'references unknown person' — greppable apart from the
-        ;; 'references missing entity' (thread-ref) wording. created_by is dropped
-        ;; by the-model §7, so it is NOT in the person-ref set.
-        v8 (reduce
-            (fn [acc :- (Vec String) p :- String] :- (Vec String)
-              (let [ref (one-i idx te p)]
-                (if (and (some? ref) (nil? (one-i idx ref "display_name")))
-                  (conj acc (str p " references unknown person " ref))
-                  acc)))
-            v7
-            ["lead" "driver"])
-        v9 (reduce
-            (fn [acc :- (Vec String) rt :- String] :- (Vec String)
-              (if (nil? (one-i idx rt "display_name"))
-                (conj acc (str "proposed_by references unknown person " rt))
-                acc))
-            v8
-            (many-i idx te "proposed_by"))]
-    v9))
+            ["relates_to" "clarifies" "amends"])]
+    v7))

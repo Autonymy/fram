@@ -51,13 +51,6 @@
 (defn many [claims ^String l ^String p]
   (mapv (fn [c] (:r c)) (q-lp claims l p)))
 
-(defn- ^Boolean any-of? [claims ^String te preds]
-  (loop [ps preds]
-  (if (empty? ps) false (if (some? (one claims te (first ps))) true (recur (rest ps))))))
-
-(defn ^Boolean terminal? [claims ^String te]
-  (any-of? claims te terminal-preds))
-
 (defn- uniq [xs]
   (reduce (fn [acc x] (if (vec-contains? acc x) acc (conj acc x))) [] xs))
 
@@ -93,17 +86,13 @@
 
 (defn violations [claims ^String te]
   (let [ids (thread-ids claims)
-   v2 (reduce (fn [acc d] (let [a (if (not (vec-contains? ids d)) (conj acc (str "depends_on references missing entity " d)) acc)]
-  (if (and (not (terminal? claims te)) (any-of? claims d withdrawn-preds)) (conj a (str "depends_on points at abandoned " d)) a))) [] (many claims te "depends_on"))
+   v2 (reduce (fn [acc d] (if (not (vec-contains? ids d)) (conj acc (str "depends_on references missing entity " d)) acc)) [] (many claims te "depends_on"))
    pa (one claims te "part_of")
    v3 (if (and (some? pa) (not (vec-contains? ids pa))) (conj v2 (str "part_of references missing entity " pa)) v2)
    v5 (if (cycle? claims "depends_on" te) (conj v3 "depends_on cycle") v3)
    v6 (if (cycle? claims "part_of" te) (conj v5 "part_of cycle") v5)
-   v7 (reduce (fn [acc p] (reduce (fn [a rt] (if (not (vec-contains? ids rt)) (conj a (str p " references missing entity " rt)) a)) acc (many claims te p))) v6 ["relates_to" "clarifies" "amends"])
-   v8 (reduce (fn [acc p] (let [ref (one claims te p)]
-  (if (and (some? ref) (nil? (one claims ref "display_name"))) (conj acc (str p " references unknown person " ref)) acc))) v7 ["lead" "driver"])
-   v9 (reduce (fn [acc rt] (if (nil? (one claims rt "display_name")) (conj acc (str "proposed_by references unknown person " rt)) acc)) v8 (many claims te "proposed_by"))]
-  v9))
+   v7 (reduce (fn [acc p] (reduce (fn [a rt] (if (not (vec-contains? ids rt)) (conj a (str p " references missing entity " rt)) a)) acc (many claims te p))) v6 ["relates_to" "clarifies" "amends"])]
+  v7))
 
 (defrecord Index [single bypred subjects revdep])
 
@@ -132,19 +121,6 @@
 (defn thread-ids-i [^Index idx]
   (filterv (fn [s] (some? (one-i idx s "title"))) (:subjects idx)))
 
-(defn ^Boolean anchor-i? [^Index idx ^String te]
-  (and (some? (one-i idx te "title")) (and (some? (one-i idx te "committed")) (and (nil? (one-i idx te "outcome")) (and (nil? (one-i idx te "abandoned")) (and (nil? (one-i idx te "driver")) (and (empty? (many-i idx te "depends_on")) (and (nil? (one-i idx te "part_of")) (and (nil? (one-i idx te "do_on")) (and (nil? (one-i idx te "valid_until")) (and (nil? (one-i idx te "estimate_hours")) (and (nil? (one-i idx te "lead")) (and (empty? (many-i idx te "proposed_by")) (and (nil? (one-i idx te "created_at")) (and (nil? (one-i idx te "updated_at")) (nil? (one-i idx te "repo")))))))))))))))))
-
-(defn work-thread-ids-i [^Index idx]
-  (filterv (fn [s] (not (anchor-i? idx s))) (thread-ids-i idx)))
-
-(defn- ^Boolean any-of-i? [^Index idx ^String te preds]
-  (loop [ps preds]
-  (if (empty? ps) false (if (some? (one-i idx te (first ps))) true (recur (rest ps))))))
-
-(defn ^Boolean terminal-i? [^Index idx ^String te]
-  (any-of-i? idx te terminal-preds))
-
 (defn dependents-i [^Index idx ^String te]
   (get (:revdep idx) te []))
 
@@ -154,15 +130,10 @@
   (reachable-from? succ (succ te) te)))
 
 (defn violations-i [^Index idx ^String te]
-  (let [term? (terminal-i? idx te)
-   v2 (reduce (fn [acc d] (let [a (if (nil? (one-i idx d "title")) (conj acc (str "depends_on references missing entity " d)) acc)]
-  (if (and (not term?) (any-of-i? idx d withdrawn-preds)) (conj a (str "depends_on points at abandoned " d)) a))) [] (many-i idx te "depends_on"))
+  (let [v2 (reduce (fn [acc d] (if (nil? (one-i idx d "title")) (conj acc (str "depends_on references missing entity " d)) acc)) [] (many-i idx te "depends_on"))
    pa (one-i idx te "part_of")
    v3 (if (and (some? pa) (nil? (one-i idx pa "title"))) (conj v2 (str "part_of references missing entity " pa)) v2)
    v5 (if (cycle-i? idx "depends_on" te) (conj v3 "depends_on cycle") v3)
    v6 (if (cycle-i? idx "part_of" te) (conj v5 "part_of cycle") v5)
-   v7 (reduce (fn [acc p] (reduce (fn [a rt] (if (nil? (one-i idx rt "title")) (conj a (str p " references missing entity " rt)) a)) acc (many-i idx te p))) v6 ["relates_to" "clarifies" "amends"])
-   v8 (reduce (fn [acc p] (let [ref (one-i idx te p)]
-  (if (and (some? ref) (nil? (one-i idx ref "display_name"))) (conj acc (str p " references unknown person " ref)) acc))) v7 ["lead" "driver"])
-   v9 (reduce (fn [acc rt] (if (nil? (one-i idx rt "display_name")) (conj acc (str "proposed_by references unknown person " rt)) acc)) v8 (many-i idx te "proposed_by"))]
-  v9))
+   v7 (reduce (fn [acc p] (reduce (fn [a rt] (if (nil? (one-i idx rt "title")) (conj a (str p " references missing entity " rt)) a)) acc (many-i idx te p))) v6 ["relates_to" "clarifies" "amends"])]
+  v7))

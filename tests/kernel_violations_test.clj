@@ -1,66 +1,52 @@
-;; kernel_violations_test.clj — the dangling-person-ref integrity check
-;; (the-model §2/§7). lead/driver/proposed_by must point at a node carrying a
-;; `display_name` claim (the person/agent kind; `name` is a RESERVED engine/schema
-;; predicate); a ref to a node WITHOUT a display_name surfaces
-;; as 'references unknown person', greppable apart from the thread-ref
-;; 'references missing entity'. Mirrors over BOTH the indexed (violations-i) and
-;; flat (violations) paths.
+;; kernel_violations_test.clj — the GENERIC structural integrity rules the engine
+;; KEEPS after the work-semantics rules moved out to lodestar.validate: dangling
+;; refs (depends_on / part_of / relates_to → a thread with no `title`) and cycles
+;; (depends_on / part_of). The WORK rules (person-refs, depends_on→abandoned) now
+;; live in lodestar — see lodestar/validate_test.clj. Mirrors BOTH the indexed
+;; (violations-i) and flat (violations) paths.
 ;;   bb -cp out tests/kernel_violations_test.clj      (from the repo ROOT)
 (require '[fram.kernel :as k])
 
 (defn idx-of [claims] (k/build-index claims))
 (defn has? [v sub] (some #(clojure.string/includes? % sub) v))
+(defn vi [claims te] (k/violations-i (idx-of claims) te))
+(defn vf [claims te] (k/violations claims te))
 
-;; @p is a person (has a name). @w1 lead @p resolves cleanly.
+;; @w1 -> @w2 (a real thread); clean.
 (def ok-claims
-  [(k/->Claim "@p" "display_name" "Tom")
-   (k/->Claim "@w1" "title" "W1")
-   (k/->Claim "@w1" "lead" "@p")])
-
-;; @w2 driver @ghost — @ghost has NO name node => dangling person ref.
-(def ghost-claims
-  [(k/->Claim "@p" "display_name" "Tom")
+  [(k/->Claim "@w1" "title" "W1")
    (k/->Claim "@w2" "title" "W2")
-   (k/->Claim "@w2" "driver" "@ghost")])
+   (k/->Claim "@w1" "depends_on" "@w2")])
 
-;; @w3 proposed_by @p (ok) + proposed_by @ghost (dangling) — only @ghost flags.
-(def proposed-claims
-  [(k/->Claim "@p" "display_name" "Tom")
-   (k/->Claim "@w3" "title" "W3")
-   (k/->Claim "@w3" "proposed_by" "@p")
-   (k/->Claim "@w3" "proposed_by" "@ghost")])
+;; a non-existent target (no `title`) is a dangling entity ref.
+(def dangling-dep  [(k/->Claim "@w" "title" "W") (k/->Claim "@w" "depends_on" "@ghost")])
+(def dangling-part [(k/->Claim "@w" "title" "W") (k/->Claim "@w" "part_of" "@ghost")])
+(def dangling-rel  [(k/->Claim "@w" "title" "W") (k/->Claim "@w" "relates_to" "@ghost")])
 
-(def ix-ok (idx-of ok-claims))
-(def ix-ghost (idx-of ghost-claims))
-(def ix-prop (idx-of proposed-claims))
+;; @a depends_on @b, @b depends_on @a => cycle.
+(def dep-cycle
+  [(k/->Claim "@a" "title" "A") (k/->Claim "@b" "title" "B")
+   (k/->Claim "@a" "depends_on" "@b") (k/->Claim "@b" "depends_on" "@a")])
 
-(def v-ok-i    (k/violations-i ix-ok "@w1"))
-(def v-ghost-i (k/violations-i ix-ghost "@w2"))
-(def v-prop-i  (k/violations-i ix-prop "@w3"))
-
-;; flat path (over the Claim vec)
-(def v-ok-f    (k/violations ok-claims "@w1"))
-(def v-ghost-f (k/violations ghost-claims "@w2"))
-(def v-prop-f  (k/violations proposed-claims "@w3"))
+;; the engine must NOT derive a person/role violation (that moved to lodestar).
+(def role-claims [(k/->Claim "@w" "title" "W") (k/->Claim "@w" "driver" "@ghost")])
 
 (def checks
-  [;; indexed path
-   ["(i) lead -> named person => no person violation" (not (has? v-ok-i "references unknown person"))]
-   ["(i) driver -> ghost => 'driver references unknown person @ghost'"
-    (has? v-ghost-i "driver references unknown person @ghost")]
-   ["(i) proposed_by -> named is clean, ghost flags"
-    (and (has? v-prop-i "proposed_by references unknown person @ghost")
-         (not (has? v-prop-i "references unknown person @p")))]
-   ;; flat path mirror
-   ["(f) lead -> named person => no person violation" (not (has? v-ok-f "references unknown person"))]
-   ["(f) driver -> ghost => 'driver references unknown person @ghost'"
-    (has? v-ghost-f "driver references unknown person @ghost")]
-   ["(f) proposed_by -> named is clean, ghost flags"
-    (and (has? v-prop-f "proposed_by references unknown person @ghost")
-         (not (has? v-prop-f "references unknown person @p")))]])
+  [["(i) clean graph => no violations" (empty? (vi ok-claims "@w1"))]
+   ["(f) clean graph => no violations" (empty? (vf ok-claims "@w1"))]
+   ["(i) depends_on -> ghost => missing entity" (has? (vi dangling-dep "@w") "depends_on references missing entity @ghost")]
+   ["(f) depends_on -> ghost => missing entity" (has? (vf dangling-dep "@w") "depends_on references missing entity @ghost")]
+   ["(i) part_of -> ghost => missing entity" (has? (vi dangling-part "@w") "part_of references missing entity @ghost")]
+   ["(f) part_of -> ghost => missing entity" (has? (vf dangling-part "@w") "part_of references missing entity @ghost")]
+   ["(i) relates_to -> ghost => missing entity" (has? (vi dangling-rel "@w") "relates_to references missing entity @ghost")]
+   ["(f) relates_to -> ghost => missing entity" (has? (vf dangling-rel "@w") "relates_to references missing entity @ghost")]
+   ["(i) depends_on cycle detected" (has? (vi dep-cycle "@a") "depends_on cycle")]
+   ["(f) depends_on cycle detected" (has? (vf dep-cycle "@a") "depends_on cycle")]
+   ["(i) engine does NOT derive person-ref violations" (not (has? (vi role-claims "@w") "unknown person"))]
+   ["(f) engine does NOT derive person-ref violations" (not (has? (vf role-claims "@w") "unknown person"))]])
 
 (let [fails (remove second checks)]
   (doseq [[nm ok] checks] (println (if ok "  [PASS] " "  [FAIL] ") nm))
   (if (empty? fails)
-    (println "\nkernel_violations:" (count checks) "/" (count checks) "PASS")
+    (println "\nkernel_violations (generic):" (count checks) "/" (count checks) "PASS")
     (do (println "\nkernel_violations:" (count fails) "FAILED") (System/exit 1))))
