@@ -86,6 +86,11 @@
 (def ^:private beagle-home   (env-or "BEAGLE_HOME"   (str (System/getProperty "user.home") "/code/beagle")))
 (def ^:private roundtrip-rkt (env-or "FRAM_ROUNDTRIP" (str beagle-home "/beagle-lib/private/claims-roundtrip.rkt")))
 (def ^:private build-all     (env-or "FRAM_BUILD_ALL" (str beagle-home "/bin/beagle-build-all")))
+;; INCREMENTAL DE-HANDICAP: per-edit gate checks+emits ONLY the edited module from
+;; its claims (claims->AST->type-check->emit clj), instead of rendering + building
+;; the whole tree. beagle's checker is per-file (declare-extern resolves cross-module
+;; refs), so unchanged modules need no work. Kills the .bclj round-trip handicap.
+(def ^:private check-emit-rkt (env-or "FRAM_CHECK_EMIT" (str beagle-home "/beagle-lib/private/claims-check-emit.rkt")))
 (def ^:private resolve-clj   (env-or "FRAM_RESOLVE"   (str (System/getProperty "user.dir") "/chartroom/src/resolve.clj")))
 (def ^:private fram-out      (env-or "FRAM_OUT"       (str (System/getProperty "user.dir") "/out")))
 ;; the source tree claim-canonical modules live in (the .bclj scope is resolved here).
@@ -170,25 +175,21 @@
               (do (sh {} "rm" "-rf" work)
                   {:isError true :text (str "REJECTED by the authoring engine — nothing mutated:\n"
                                             (str/trim (str (:out edit) (:err edit))))})
-              ;; 3. render every OTHER module from the log into the gate tree; drop in the edit.
-              (let [render-fail
-                    (some (fn [m]
-                            (let [out (str tree "/" m ".bclj")]
-                              (if (= m module)
-                                (do (io/copy (io/file edited) (io/file out)) nil)
-                                (let [r (apply sh {:out (io/file out) :err :string}
-                                               "bb" "-cp" fram-out (str flip-bin-dir "/fram-render-code")
-                                               m (flip-log-args))]
-                                  (when (not (zero? (:exit r))) (str "render-from-log failed for " m ": " (:err r)))))))
-                          modules)]
+              ;; 3. INCREMENTAL: emit-edn the EDITED module's claims only — skip rendering every
+              ;;    OTHER module (unchanged; per-file check resolves cross-refs via declare-extern).
+              (let [ednf (str work "/edited.edn")
+                    render-fail
+                    (let [ee (sh {:out (io/file ednf) :err :string} "racket" roundtrip-rkt "--emit-edn" edited)]
+                      (when (not (zero? (:exit ee))) (str "emit-edn of edited module failed: " (str/trim (:err ee)))))]
                 (if render-fail
                   (do (sh {} "rm" "-rf" work) {:isError true :text (str "FLIP — " render-fail)})
-                  ;; 4. recompile-gate the whole render-from-log tree (+ the edit).
-                  (let [bg (sh {:out :string :err :string} build-all tree "--out" odir)
+                  ;; 4. INCREMENTAL GATE: claims-check-emit the edited module (claims->AST->type-check
+                  ;;    ->clj), fail-closed on exit. No whole-tree build-all (the .bclj round-trip handicap).
+                  (let [bg (sh {:out :string :err :string} "racket" check-emit-rkt ednf)
                         built (str (:out bg) (:err bg))]
-                    (if-not (str/includes? built "0 error")
+                    (if-not (zero? (:exit bg))
                       (do (sh {} "rm" "-rf" work)
-                          {:isError true :text (str "REJECTED — edited corpus does not recompile from the log (nothing committed):\n"
+                          {:isError true :text (str "REJECTED — edited module does not type-check (nothing committed):\n"
                                                     (str/trim built))})
                       ;; PASS — commit the affected module's AST delta through the coordinator.
                       (let [commit (sh {:out :string :err :string}
