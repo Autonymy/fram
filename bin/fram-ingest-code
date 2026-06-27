@@ -42,6 +42,16 @@
 (def ^:private beagle-home   (or (System/getenv "BEAGLE_HOME") (str home "/code/beagle")))
 (def ^:private roundtrip-rkt (or (System/getenv "FRAM_ROUNDTRIP")
                                  (str beagle-home "/beagle-lib/private/claims-roundtrip.rkt")))
+;; emit-edn loads claims-roundtrip's .zo, compiled for beagle's flake-pinned
+;; racket; bare "racket" picks the ambient one -> .zo 'version mismatch'. Resolve
+;; the pinned racket like bin/_beagle-racket (FRAM_RACKET overrides).
+(def ^:private racket-bin
+  (or (System/getenv "FRAM_RACKET")
+      (let [r (try (proc/sh {:out :string :err :string} "direnv" "exec" beagle-home "which" "racket")
+                   (catch Exception _ nil))]
+        (when (and r (zero? (:exit r)) (not (clojure.string/blank? (:out r))))
+          (clojure.string/trim (:out r))))
+      "racket"))
 
 ;; --- args --------------------------------------------------------------------
 (defn- parse-args [args]
@@ -71,7 +81,7 @@
 ;; emit-edn prints `@file <path>` then one `[s "pred" o]` per line. o is an INTEGER
 ;; (a structural link to node `o`) or a STRING (a literal value). We re-key every id.
 (defn- emit-edn-triples [path]
-  (let [r (proc/sh {:out :string :err :string} "racket" roundtrip-rkt "--emit-edn" path)]
+  (let [r (proc/sh {:out :string :err :string} racket-bin roundtrip-rkt "--emit-edn" path)]
     (when (not (zero? (:exit r)))
       (die "emit-edn FAILED for" path "\n" (:err r)))
     (->> (str/split-lines (:out r))
