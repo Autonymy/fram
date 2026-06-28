@@ -72,19 +72,20 @@
   (or (s/resolve-name (store co) nm)
       (let [e (c/entity! (store co))] (s/name! (store co) e nm tx) e)))
 
-;; finding #12: a brand-new predicate has NO cardinality claim, so s/cardinality
-;; defaults to "multi" — and s/link!/s/assert! only supersede a prior value when
-;; the STORE records cardinality=="single" (they don't consult ck/single?). So a
-;; kernel-single predicate that was never def-predicate!'d (e.g. one not present
-;; in the flat log at migration) would have its first write NOT supersede,
-;; accumulating duplicate live values. Before such a write, pin the store's
-;; cardinality to "single" (in the SAME tx) so the schema layer supersedes
-;; correctly. Idempotent: only fires when the kernel says single but the store
-;; doesn't already record it, so an already-defined-single predicate is untouched.
-(defn- ensure-single-cardinality! [co tx pred kind]
-  (when (and (ck/single? pred) (not= "single" (s/cardinality (store co) pred)))
-    (s/def-predicate! (store co) pred "single"
-                      (if (= kind :link) "ref" "literal") tx)))
+;; Bootstrap SEED (move-B keystone): the kernel single-valued LIST, read ONCE at
+;; coord creation and turned into per-predicate `cardinality` CLAIMS. After this the
+;; CLAIM is the SOLE runtime authority for single-ness — commit!/retract! consult
+;; only (s/cardinality …), never ck/single? (the old per-write ensure-single pin +
+;; the L128/L167 OR-arm are gone). This is the replacement for finding #12's
+;; "infer-single-on-first-write": seeding the WHOLE list up front (even predicates
+;; never yet written) means there is no "first runtime write of an unseeded single
+;; predicate" case — strictly stronger than the old per-write pin. An unseeded
+;; predicate defaults to "multi" == coexist-elect, which is now the intended default.
+;; Idempotent: only seeds a predicate the store doesn't already record as single
+;; (so setup!'s name=single and any prior def-predicate! ref-kind are untouched).
+(defn- seed-kernel-cardinality! [st tx]
+  (doseq [p ck/single-valued :when (not= "single" (s/cardinality st p))]
+    (s/def-predicate! st p "single" "literal" tx)))
 
 ;; --- obligation: depends_on/part_of acyclicity (pure, over resolved ids) ----
 (defn- succ [co pid x]
@@ -104,6 +105,7 @@
         tx0 (c/begin-tx! st "bootstrap")
         co {:store st :log log-path :lock (Object.)}]
     (s/setup! st tx0)
+    (seed-kernel-cardinality! st tx0)            ; demote ck/single-valued to one-time cardinality CLAIMS
     (append-tx! co (delta-records co 0 tx0))     ; the bootstrap is the first committed tx
     co))
 
@@ -125,7 +127,10 @@
           te0    (s/resolve-name (store co) te-name)
           tgt0   (when (= kind :link) (s/resolve-name (store co) r-spec))
           vid    (when (= kind :assert) (c/value-id (store co) r-spec))
-          single (or (= "single" (s/cardinality (store co) pred)) (ck/single? pred))
+          ;; single-ness from the cardinality CLAIM ALONE (move-B keystone): the
+          ;; ck/single? kernel-list OR-arm is gone — the claim, seeded once at boot,
+          ;; is the sole runtime authority. No claim => "multi" => coexist-elect.
+          single (= "single" (s/cardinality (store co) pred))
           bv     (if (and te0 pid) (base-version co te0 pid) 0)
           live   (if (and te0 pid) (live-cids-lp co te0 pid) [])
           claims (:claims @(store co))]
@@ -149,7 +154,6 @@
         (let [since (:next-id @(store co))
               tx (c/begin-tx! (store co) agent)
               te (ent! co tx te-name)]
-          (ensure-single-cardinality! co tx pred kind)   ; (#12) supersede on first single write
           (case kind
             :link   (s/link! (store co) te pred (ent! co tx r-spec) tx)
             :assert (s/assert! (store co) te pred r-spec tx))
@@ -164,7 +168,7 @@
   (locking (:lock co)
     (let [pid    (c/value-id (store co) pred)
           te0    (s/resolve-name (store co) te-name)
-          single (or (= "single" (s/cardinality (store co) pred)) (ck/single? pred))]
+          single (= "single" (s/cardinality (store co) pred))]   ; claim is sole authority (move-B)
       (if (or (nil? te0) (nil? pid))
         {:ok (current-seq co)}                              ; nothing to retract
         (let [bv (base-version co te0 pid)]

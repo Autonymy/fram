@@ -1468,6 +1468,14 @@
     (doseq [p (keys by-pred) :when (not (schema-preds p))]   ; skip reserved engine preds (defensive)
       (s/def-predicate! st p (if (ck/single? p) "single" "multi")
                             (if (some ref-str? (map :r (get by-pred p))) "ref" "literal") tx))
+    ;; complete the bootstrap SEED (move-B keystone): kernel single-valued preds NOT
+    ;; present in the flat log still get their cardinality CLAIM, so a first runtime
+    ;; write supersedes (not accumulates) — the replacement for finding #12's per-write
+    ;; ensure-single pin, now a one-time seed. ck/single-valued is read ONCE here; at
+    ;; runtime commit! consults only the claim. (The loop above already seeded in-log
+    ;; preds via ck/single?, so the guard skips them and preserves their ref/literal kind.)
+    (doseq [p ck/single-valued :when (and (not (schema-preds p)) (not= "single" (s/cardinality st p)))]
+      (s/def-predicate! st p "single" "literal" tx))
     (let [memo (atom {})
           ent! (fn [sid] (or (get @memo sid)
                              (let [id (c/entity! st)] (swap! memo assoc sid id) (s/name! st id sid tx) id)))]
