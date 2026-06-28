@@ -459,7 +459,7 @@
     (when (and lid pid)
       (let [cids (live-cids-lp @co lid pid)]
         (when (seq cids)
-          (let [cl (c/claim-of st (first cids))]
+          (let [cl (c/claim-of st (elect @co cids))]    ; coexist-elect: the elected member
             (when cl (c/literal st (:r cl)))))))))
 
 (defn- terminal-cascade! [te]
@@ -473,7 +473,7 @@
           did (c/value-id st "driver")
           live-driver (let [cids (when (and eid did) (live-cids-lp @co eid did))]
                         (when (seq cids)
-                          (let [cl (c/claim-of st (first cids))]
+                          (let [cl (c/claim-of st (elect @co cids))]   ; coexist-elect
                             (when cl
                               (if (c/value-object? st (:r cl))
                                 (c/literal st (:r cl))
@@ -1265,10 +1265,14 @@
                       e (s/resolve-name st (:te req))
                       pid (c/value-id st (:p req))
                       live (if (and e pid) (live-cids-lp @co e pid) [])
-                      vals (mapv (fn [cid] (let [r (:r (c/claim-of st cid))]
-                                             (if (c/value-object? st r) (c/literal st r) (s/name-of st r))))
-                                 live)]
-                  {:value (first vals) :members (count vals) :ambiguous? (> (count vals) 1)
+                      render (fn [cid] (let [r (:r (c/claim-of st cid))]
+                                         (if (c/value-object? st r) (c/literal st r) (s/name-of st r))))
+                      vals (mapv render live)]
+                  ;; :value is the coexist-ELECTED member (not a blind first-live); :members/
+                  ;; :ambiguous?/:values still surface the full multiplicity so a contested
+                  ;; (te,pred) reads as a CHECKABLE answer, not a silently arbitrary pick.
+                  {:value (when (seq live) (render (elect @co live)))
+                   :members (count vals) :ambiguous? (> (count vals) 1)
                    :values vals :version (current-seq @co)})
       {:error "unknown op"}))))
 

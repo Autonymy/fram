@@ -68,6 +68,24 @@
   ;; was the residual O(total) authoring cost (per-op grew 14->61ms over a 500-def build).
   (or (:next-seq @(store co)) 0))
 
+;; --- coexist-elect: the default read-time election (move-B keystone) ---------
+;; Under coexist-elect a live (l,p) group MAY hold >1 coexisting claim: rival writes
+;; both LAND (no writer blocks, none is rejected). Choosing the main one is a READ-time
+;; decision every reader computes IDENTICALLY with zero coordination — the winner is
+;; the EARLIEST claim by the total key [cid, writing-agent]. cids are monotonic under
+;; the single allocator, so earliest-cid IS the winner today; `agent` is the documented
+;; secondary key that keeps the order total IF cid allocation is ever sharded (the
+;; moment that happens, earliest-cid alone stops being a total order — coexist-elect is
+;; sound iff exactly one cid allocator). For a cid-ascending live group (the default)
+;; this is BYTE-IDENTICAL to (first cids); it diverges only to make the pick total and
+;; input-order-independent. The loser sees itself lose on its NEXT read and yields.
+;; nil on an empty group. (`view` attaches here when first-class views land — thread E.)
+(defn agent-of [co cid]
+  (let [m @(store co)] (get-in m [:txs (get (:tx-of m) cid) :agent])))
+(defn elect [co cids]
+  (when (seq cids)
+    (first (sort-by (fn [cid] [cid (str (agent-of co cid))]) cids))))
+
 (defn- ent! [co tx nm]
   (or (s/resolve-name (store co) nm)
       (let [e (c/entity! (store co))] (s/name! (store co) e nm tx) e)))

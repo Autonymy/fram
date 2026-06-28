@@ -98,10 +98,19 @@
 ;; rather than silently buried; when first-class views land (VIEWS_AND_BRANCHES §8) this is
 ;; where a `view` argument attaches. Behavior today is identical to `first`.
 (defn select-main-1
-  "Select the default-main member of a (live) (l,p) claim-id group `cids`. Current single-view
-   policy = first. Honest name for an implicit (first …): a SELECTION, not a uniqueness proof.
-   Returns nil on an empty group."
-  [cids] (first cids))
+  "Coexist-elect read-time election of the default-main member of a (live) (l,p) claim-id group
+   `cids`: the winner is the EARLIEST claim by the total key [cid, writing-agent]. cids are
+   cid-ascending under the single allocator, so this is BYTE-IDENTICAL to (first cids); the
+   agent tiebreak only keeps the order total if cid allocation is ever sharded. Every reader
+   computes it identically with zero coordination — the same election the engine coordinator
+   runs (cnf_coord/elect). Returns nil on an empty group. Degrades to (first cids) when no store
+   is bound (pure cid-vector callers, e.g. the honesty-pass unit), so it stays a function of
+   cids alone there."
+  [cids]
+  (when (seq cids)
+    (if (nil? ctx)
+      (first cids)
+      (first (sort-by (fn [cid] [cid (str (get-in @ctx [:txs (get (:tx-of @ctx) cid) :agent]))]) cids)))))
 
 (defn pred-val
   "The default-main value of predicate `pname` on node `e`. `pname` may be multi-valued in the
