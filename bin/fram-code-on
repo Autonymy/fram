@@ -22,11 +22,13 @@ mkdir -p "$DIR/.fram"
 
 echo "fram-code-on: $DIR (port $PORT)"
 
-# 1. ingest the code into claims (deterministic, no LLM)
+# 1. ingest the code into claims (deterministic, no LLM) — recurse for .bclj
+#    (fram-ingest-code is non-recursive + .bclj-only; feed it the files we find)
 echo "  [1/3] ingesting code -> claims …"
-( cd "$HERE" && bb -cp out tests/.. >/dev/null 2>&1 || true )   # warm cp cache (noop-safe)
-( cd "$HERE" && BEAGLE_HOME="$BEAGLE_HOME" bin/fram-ingest-code "$DIR" --out "$CODE_LOG" ) \
-  && echo "        $(wc -l <"$CODE_LOG") claims at $CODE_LOG"
+mapfile -t SRCS < <(find "$DIR" -name '*.bclj' -not -path '*/.fram/*' | sort)
+[ "${#SRCS[@]}" -eq 0 ] && { echo "        no .bclj files under $DIR (fram-code-on ingests .bclj projects today)"; exit 1; }
+( cd "$HERE" && BEAGLE_HOME="$BEAGLE_HOME" bin/fram-ingest-code "${SRCS[@]}" --out "$CODE_LOG" ) \
+  && echo "        ${#SRCS[@]} modules, $(wc -l <"$CODE_LOG") claims -> $CODE_LOG"
 
 # 2. boot the warm coordinator (detached — survives this shell)
 if ss -ltn 2>/dev/null | grep -q ":$PORT "; then
