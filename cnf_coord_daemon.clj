@@ -1283,6 +1283,33 @@
                   {:value (when (seq live) (render (elect @co live)))
                    :members (count vals) :ambiguous? (> (count vals) 1)
                    :values vals :version (current-seq @co)})
+      ;; :as-of — time-travel READ (thread H, Part B). Reconstruct the view as of seq S
+      ;; (cnf_coord/live-as-of: born <= S, no supersede/withdraw marker <= S) and either
+      ;; run a Datalog :query over that historical EDB (SAME q/run oracle, just fed an
+      ;; as-of claims vec — the engine is untouched) or resolve one (:te,:p) group as-of.
+      ;; Retraction-as-append makes this exact: a later-withdrawn claim is RE-SEEN at an
+      ;; earlier S. Bounded by the snapshot floor (live-as-of folds the in-store tail).
+      :as-of (let [s (:seq req) st (:store @co)]
+               (cond
+                 (nil? s) {:error ":as-of needs :seq"}
+                 (:query req)
+                 (let [cids   (live-as-of @co s)
+                       claims (vec (keep (fn [cid] (when-let [t (claim->triple st cid)]
+                                                     (ck/->Claim (nth t 0) (nth t 1) (nth t 2))))
+                                         cids))
+                       res    (q/run claims (:query req))]
+                   (assoc res :as-of s :version (current-seq @co)))
+                 (:te req)
+                 (let [e   (s/resolve-name st (:te req))
+                       pid (c/value-id st (:p req))
+                       live (if (and e pid) (live-as-of-lp @co s e pid) [])
+                       render (fn [cid] (let [r (:r (c/claim-of st cid))]
+                                          (if (c/value-object? st r) (c/literal st r) (s/name-of st r))))
+                       vals (mapv render live)]
+                   {:value (when (seq live) (render (elect @co (vec live))))
+                    :members (count vals) :ambiguous? (> (count vals) 1)
+                    :values vals :as-of s :version (current-seq @co)})
+                 :else {:error ":as-of needs :query or :te/:p"}))
       {:error "unknown op"}))))
 
 ;; ---- socket server (verbatim shape from the proven coord.clj) ---------------

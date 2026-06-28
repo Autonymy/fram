@@ -105,6 +105,33 @@
 (defn causal-key [co cid]
   [(or (observed-of co cid) (seq-of co cid)) cid (str (agent-of co cid))])
 
+;; --- as-of: the history fold (thread H, Part B) ------------------------------
+;; "What was live AS OF seq S?" A claim is live-as-of-S iff it was BORN at a seq <= S
+;; AND no cnf-supersedes marker for it was committed at a seq <= S. Because retraction is
+;; append-only (a marker, never a delete), this is EXACT: a claim later superseded/withdrawn
+;; is naturally RE-SEEN at an earlier S — its tombstone hadn't been written yet (acceptance
+;; b). Folds the in-store tail, so it is bounded by thread D's snapshot floor (history
+;; compacted below a snapshot is gone: as-of before the floor is unavailable, not wrong) —
+;; never O(total history) (acceptance f).
+(defn- tx-seq-of [m cid] (get-in m [:txs (get (:tx-of m) cid) :seq] 0))
+(defn superseded-as-of [co s]
+  (let [m @(store co) sup (:supersedes-pred m)]
+    (set (for [[cid cl] (:claims m)
+               :when (and (= (:p cl) sup) (<= (tx-seq-of m cid) s))]
+           (:r cl)))))
+(defn live-as-of [co s]
+  (let [m @(store co) sup (:supersedes-pred m) gone (superseded-as-of co s)]
+    (set (for [[cid cl] (:claims m)
+               :when (and (<= (tx-seq-of m cid) s)
+                          (not= (:p cl) sup)              ; the markers are bookkeeping, not data
+                          (not (contains? gone cid)))]
+           cid))))
+;; the live cids of ONE (te,pid) group as of S — the as-of twin of live-cids-lp.
+(defn live-as-of-lp [co s te pid]
+  (let [m @(store co) all (live-as-of co s)]
+    (filterv (fn [cid] (let [cl (get (:claims m) cid)] (and (= (:l cl) te) (= (:p cl) pid))))
+             all)))
+
 ;; --- views-as-claims (thread E): per-branch isolation over the same log ------
 ;; A VIEW is a first-class subject; (view selects @cid) claims are its OVERLAY —
 ;; the cids it treats as facts. The object IS a claim id: cids live in the same

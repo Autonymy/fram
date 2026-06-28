@@ -72,6 +72,31 @@
   (chk "(a) the elected member's value is the earliest decider's (B)"
        (= "B" (c/literal (store co) (:r (c/claim-of (store co) causal-win))))))
 
+;; ============================================================================
+;; (b) as-of — reconstruct a historical view; a later-superseded claim is RE-SEEN.
+;; ============================================================================
+(let [log "/tmp/cnf-causality-b.log"
+      co  (new-coord log)
+      _   (register-pred! co "status" "single" "literal")   ; single -> overwrite supersedes
+      pid (c/value-id (store co) "status")
+      tid (fn [] (s/resolve-name (store co) "TB"))
+      r1  (commit! co "w" "TB" "status" :assert "open" 0)   ; born at seq S1
+      s1  (:ok r1)
+      mid (current-seq co)                                  ; a seq AFTER open, BEFORE closed
+      r2  (commit! co "w" "TB" "status" :assert "closed" s1); supersedes "open" at seq S2 > S1
+      s2  (:ok r2)
+      val-of (fn [cids] (mapv #(c/literal (store co) (:r (c/claim-of (store co) %))) cids))]
+  (chk "(b) NOW: only the latest value is live (open superseded)"
+       (= ["closed"] (val-of (live-cids-lp co (tid) pid))))
+  (chk "(b) as-of a seq BEFORE the overwrite RE-SEES the superseded 'open'"
+       (= ["open"] (val-of (live-as-of-lp co mid (tid) pid))))
+  (chk "(b) as-of the CURRENT seq == the live view ('closed')"
+       (= ["closed"] (val-of (live-as-of-lp co s2 (tid) pid))))
+  (chk "(b) as-of seq 0 (pre-history) sees nothing on this group"
+       (empty? (live-as-of-lp co 0 (tid) pid)))
+  (chk "(b) as-of is bounded: live-as-of folds the in-store tail, returns a set"
+       (set? (live-as-of co s2))))
+
 ;; ---- summary ---------------------------------------------------------------
 (let [cs @checks fails (remove second cs)]
   (doseq [[nm ok] cs] (println (if ok "  [PASS] " "  [FAIL] ") nm))
