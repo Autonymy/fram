@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# ============================================================================
+# fram-code-on — THE FLIP. Turn the graph stack ON for a code directory.
+#   fram-code-on <dir> [port]
+# Does the whole incantation in one shot:
+#   1. ingest <dir> -> .fram/code.log  (the code becomes claims)
+#   2. boot the WARM coordinator on that log (sole-writer, in-memory graph)
+#   3. write <dir>/.mcp.json so Claude Code gets the fram MCP with graph-edit
+#      verbs (add-def/set-body/rename-def/insert-after) authoring INTO the graph
+#      (warm :edit-min, no re-fold) + the repair loop (typed Beagle errors).
+# After it prints ON: (re)start Claude Code in <dir>. To reason over the code
+# graph (blast-radius / who-calls), run the callgraph command it prints.
+# Turn OFF: fram-code-off <dir>  (kills the coordinator; remove .mcp.json).
+# ============================================================================
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")/.." && pwd)"          # fram repo root
+BEAGLE_HOME="${BEAGLE_HOME:-$HOME/code/beagle}"
+DIR="${1:?usage: fram-code-on <dir> [port]}"; DIR="$(cd "$DIR" && pwd)"
+PORT="${2:-$(( (RANDOM % 20000) + 30000 ))}"
+CODE_LOG="$DIR/.fram/code.log"
+mkdir -p "$DIR/.fram"
+
+echo "fram-code-on: $DIR (port $PORT)"
+
+# 1. ingest the code into claims (deterministic, no LLM)
+echo "  [1/3] ingesting code -> claims …"
+( cd "$HERE" && bb -cp out tests/.. >/dev/null 2>&1 || true )   # warm cp cache (noop-safe)
+( cd "$HERE" && BEAGLE_HOME="$BEAGLE_HOME" bin/fram-ingest-code "$DIR" --out "$CODE_LOG" ) \
+  && echo "        $(wc -l <"$CODE_LOG") claims at $CODE_LOG"
+
+# 2. boot the warm coordinator (detached — survives this shell)
+if ss -ltn 2>/dev/null | grep -q ":$PORT "; then
+  echo "  [2/3] coordinator already on :$PORT (reusing)"
+else
+  echo "  [2/3] booting warm coordinator on :$PORT …"
+  ( cd "$HERE" && setsid nohup clojure -M cnf_coord_daemon.clj serve-flat "$PORT" "$CODE_LOG" \
+      >"$DIR/.fram/coord-$PORT.log" 2>&1 & )
+  for i in $(seq 1 40); do sleep 0.5; grep -q "listening on" "$DIR/.fram/coord-$PORT.log" 2>/dev/null && break; done
+  grep -q "listening on" "$DIR/.fram/coord-$PORT.log" 2>/dev/null \
+    && echo "        coordinator up (sole-writer, loopback)" \
+    || { echo "        FAILED to boot — see $DIR/.fram/coord-$PORT.log"; exit 1; }
+fi
+
+# 3. write .mcp.json so Claude Code picks up the fram graph-edit MCP for this dir
+echo "  [3/3] writing $DIR/.mcp.json …"
+cat > "$DIR/.mcp.json" <<JSON
+{
+  "mcpServers": {
+    "fram": {
+      "command": "$HERE/bin/fram-mcp",
+      "args": [],
+      "env": {
+        "FRAM_FLIP": "1",
+        "FRAM_GRAPH_EDIT": "1",
+        "FRAM_CODE_PORT": "$PORT",
+        "FRAM_CODE_LOG": "$CODE_LOG",
+        "FRAM_SRC": "$DIR",
+        "FRAM_OUT": "$HERE/out",
+        "FRAM_BIN": "$HERE/bin",
+        "FRAM_RESOLVE": "$HERE/chartroom/src/resolve.clj",
+        "FRAM_ROUNDTRIP": "$BEAGLE_HOME/beagle-lib/private/claims-roundtrip.rkt",
+        "FRAM_CHECK_EMIT": "$BEAGLE_HOME/beagle-lib/private/claims-check-emit.rkt",
+        "FRAM_BUILD_ALL": "$BEAGLE_HOME/bin/beagle-build-all",
+        "BEAGLE_HOME": "$BEAGLE_HOME"
+      }
+    }
+  }
+}
+JSON
+
+cat <<EOF
+
+=== STACK ON ===
+Authoring: (re)start Claude Code in $DIR — you now have mcp__fram__add-def /
+  set-body / rename-def / insert-after, authoring INTO the claim graph (warm,
+  no re-fold; edits type-checked + pointed Beagle errors returned for repair).
+Reason over the code graph (blast-radius / who-calls), any time:
+  bb -cp $HERE/out:$HERE/chartroom/src $HERE/chartroom/src/callgraph.clj $CODE_LOG
+Turn OFF: $HERE/bin/fram-code-off $DIR
+EOF
