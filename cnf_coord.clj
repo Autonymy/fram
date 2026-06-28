@@ -242,6 +242,32 @@
       (boolean (and cur (= (:holder cur) holder) (= epoch (:epoch cur))
                     (> (:exp cur) (System/currentTimeMillis)))))))
 
+;; --- atomic counter (the swarm token budget) -------------------------------
+;; bump-counter! adds delta to a numeric single-valued predicate under the SAME
+;; lock the lease uses, so concurrent charges from N executors serialize and can't
+;; lose updates (the read-then-assert-via-tells race the budget would otherwise hit).
+;; Single-valued is load-bearing: an undeclared predicate is multi-valued, so asserts
+;; ACCUMULATE and a later read picks an arbitrary cid — silent lost updates.
+(defn- read-counter [co te-name p]
+  (let [st (store co)
+        te (s/resolve-name st te-name)
+        pid (c/value-id st p)]
+    (when (and te pid)
+      (when-let [cid (first (live-cids-lp co te pid))]
+        (parse-long (str (get (:values @st) (:r (get (:claims @st) cid)))))))))
+
+(defn bump-counter! [co te-name p delta]
+  (locking (:lock co)
+    (let [newn  (+ (or (read-counter co te-name p) 0) (long delta))
+          since (:next-id @(store co))
+          tx    (c/begin-tx! (store co) "bump")
+          te    (ent! co tx te-name)]
+      (when (not= "single" (s/cardinality (store co) p))
+        (s/def-predicate! (store co) p "single" "literal" tx))
+      (s/assert! (store co) te p (str newn) tx)
+      (append-tx! co (delta-records co since tx))
+      {:ok (get-in @(store co) [:txs tx :seq]) :value newn})))
+
 ;; --- replay: rebuild the store from the v2 log (drops torn/uncommitted txs) --
 (defn- read-records [path]
   (with-open [r (io/reader path)]

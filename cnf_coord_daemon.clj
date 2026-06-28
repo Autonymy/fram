@@ -1162,6 +1162,11 @@
       :version  {:version (current-seq @co)}
       :assert   (do-assert (:te req) (:p req) (:r req) (:base req))
       :retract  (do-retract (:te req) (:p req) (:r req) (:base req))
+      ;; :bump — ATOMIC add to a numeric counter (read-add-write under the lease lock, so
+      ;; concurrent charges from N executors can't lose updates). Declares the predicate
+      ;; single-valued (else asserts accumulate -> arbitrary reads). The swarm token budget
+      ;; (@swarm budget_spent) uses it. -> {:ok seq :value <new>}. (:n may be negative.)
+      :bump     (bump-counter! @co (:te req) (:p req) (:n req))
       ;; --- exclusive-lease wire verbs (agents lease @lease:<res> over the socket) ---
       ;; The lease fn enforces mutual exclusion in its OWN (:lock co); the outer dlock just
       ;; serializes with other daemon ops. A bare :assert @lease:<res> is the UNSAFE lost-update
