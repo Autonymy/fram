@@ -86,6 +86,10 @@
 ;; The incremental corpus cache (ensure-corpus-groups! below) — declared here so the reload-reset
 ;; can invalidate it; the fns that use it are defined after with-resolve-read.
 (def corpus-groups (atom nil))    ; {module-src -> [entity-ids]} | nil (cold/invalidated)
+;; calls_defn closure cache (thread 019f1010-2705) — declared here so reset-refers-state!
+;; can invalidate it; ensure-calls! + the fns that read it are defined after ensure-refers!.
+(def calls-version (atom -1))     ; the refers-version calls_defn was last derived at
+(def calls-cache   (atom nil))    ; {:edges [[caller callee]] :blast {callee -> #{callers}} :defns {name -> meta}}
 
 ;; reset all S3.3 derived state — called when `co` is REBUILT wholesale (boot /
 ;; external flat reload): the in-memory refers_to + export snapshot belong to the OLD
@@ -96,7 +100,9 @@
   (reset! materialized? false)
   (reset! refers-version -1)
   (reset! last-materialize nil)
-  (reset! corpus-groups nil))
+  (reset! corpus-groups nil)
+  (reset! calls-version -1)            ; calls_defn closure belongs to the OLD store
+  (reset! calls-cache nil))
 
 ;; ---- DoS hardening knobs (findings #2/#5/#19/#20) --------------------------
 ;; Read timeout on every accepted socket — mirrors the CLIENT side (fram.rt
@@ -706,6 +712,52 @@
     :else nil))
 
 ;; ============================================================================
+;; :blast / :concern-overlap — the WARM scope-correct call graph (thread 019f1010-2705).
+;; ============================================================================
+;; calls_defn is a defn->defn edge derived by lifting the materialized refers_to up to
+;; the ENCLOSING defn (resolve/call-edges) — scope-correct (same-named fns in different
+;; modules are distinct @mod#int nodes, never merged) and rename-stable (keyed on node
+;; identity, not spelling). The edge set + its transitive blast closure are VERSION-
+;; CACHED on refers-version, so they are re-derived only when CODE actually changed —
+;; never on a footprint declare (a @concern->@node claim leaves the call graph alone) nor
+;; per overlap query. blast(D) = D's transitive callers (who breaks if D changes), shared
+;; with who-calls via resolve/blast-closure. (v1: call-edges re-derives whole-corpus on a
+;; code edit; an O(delta) calls_defn — thread D's discipline — is the scale follow-up.)
+;; (calls-version / calls-cache atoms are declared up near corpus-groups so reset-refers-state! can invalidate them.)
+
+(defn ensure-calls! []
+  (ensure-refers!)                                     ; calls_defn lifts the warm refers_to
+  (when (not= @calls-version @refers-version)
+    (let [st (:store @co)
+          {:keys [defn-meta edges]} (with-resolve-read st (resolve/call-edges))
+          nm   (fn [leaf] (s/name-of st leaf))         ; @mod#int identity — footprint joins on these names
+          named-edges (mapv (fn [[a b]] [(nm a) (nm b)]) edges)
+          {:keys [blast]} (resolve/blast-closure named-edges)
+          defns (into {} (map (fn [[leaf m]] [(nm leaf) m]) defn-meta))]
+      (reset! calls-cache {:edges named-edges :blast blast :defns defns})
+      (reset! calls-version @refers-version)))
+  @calls-cache)
+
+;; the @mod#int node-name set in a concern's blast CLOSURE: its footprint nodes plus
+;; every node that transitively CALLS one of them. Caller-direction on BOTH sides makes
+;; the closure intersection symmetric — A-changes-callee-of-B and B-changes-caller-of-A
+;; are both caught (a callee's caller pulls the other concern's node into the overlap).
+(defn- closure-of [blast nodes]
+  (reduce (fn [acc n] (into (conj acc n) (get blast n))) #{} nodes))
+
+;; {concern-name -> #{footprint node-name}} read LIVE from the warm store — sees a peer's
+;; committed-but-unrendered footprint claim with no render and no merge.
+(defn- footprint-by-concern [st]
+  (when-let [FP (c/value-id st "footprint")]
+    (reduce (fn [m cid]
+              (let [cl (c/claim-of st cid)
+                    c  (s/name-of st (:l cl))
+                    r  (:r cl)
+                    n  (if (c/value-object? st r) (c/literal st r) (s/name-of st r))]
+                (update m c (fnil conj #{}) n)))
+            {} (c/by-p st FP))))
+
+;; ============================================================================
 ;; INCREMENTAL CORPUS CACHE (per-verb O(edited-module), not O(total-app))
 ;; ============================================================================
 ;; corpus-from-store! otherwise reduces over EVERY name claim in the whole store on EVERY commit
@@ -1251,6 +1303,38 @@
                          :version (current-seq @co)}
                         {:error "no such binding" :te (:te req) :module (:module req) :name (:name req)
                          :version (current-seq @co)})))
+      ;; :blast — transitive callers of a binding over the WARM calls_defn closure (who
+      ;; breaks if it changes). Target is {:te "@mod#id"} OR {:module .. :name ..}; the
+      ;; node-id is resolved via ultimate so a reference site resolves to its binding.
+      :blast    (let [{:keys [blast]} (ensure-calls!)
+                      B (target-node req)
+                      bname (when B (s/name-of (:store @co) B))
+                      callers (get blast bname #{})]
+                  (if bname
+                    {:node bname :blast (vec callers) :count (count callers)
+                     :version (current-seq @co)}
+                    {:error "no such binding" :te (:te req) :module (:module req) :name (:name req)
+                     :version (current-seq @co)}))
+      ;; :concern-overlap — for {:te "@concern:id"}, the peer concerns whose blast CLOSURE
+      ;; intersects mine, derived over the warm store: footprint read LIVE (sees peers'
+      ;; committed-but-unrendered @concern->@node claims), closure via the recursive
+      ;; calls_defn reaches. Footprint is multi-valued and declaring never blocks — overlap
+      ;; is the SIGNAL surfaced, never a conflict. -> {:overlaps [{:concern :shared :footprint}]}.
+      :concern-overlap
+      (let [{:keys [blast]} (ensure-calls!)
+            st (:store @co)
+            fp (or (footprint-by-concern st) {})
+            me (:te req)
+            my-nodes (get fp me #{})
+            my-clo (closure-of blast my-nodes)
+            overlaps (->> (dissoc fp me)
+                          (keep (fn [[c nodes]]
+                                  (let [shared (clojure.set/intersection my-clo (closure-of blast nodes))]
+                                    (when (seq shared)
+                                      {:concern c :shared (vec shared) :footprint (vec nodes)}))))
+                          vec)]
+        {:concern me :footprint (vec my-nodes) :overlaps overlaps
+         :version (current-seq @co)})
       ;; ---- S3.3 gate surface (test-only reads; no mutation) ------------------
       ;; :refers-ensure — force the maintenance step (scoped or cold) for the current
       ;; dirty set, then report what it did: mode, modules walked, edges stripped, and
