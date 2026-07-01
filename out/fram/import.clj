@@ -26,7 +26,8 @@
   :else tok))
 
 (defn- warn [^String msg]
-  (binding [*out* *err*] (println (str "WARN import: " msg))))
+  (binding [*out* *err*]
+  (println (str "WARN import: " msg))))
 
 (defn- file->claims [^String path ^String content]
   (let [doc (split-doc content)

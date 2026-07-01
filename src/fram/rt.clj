@@ -30,7 +30,15 @@
        sort
        vec))
 
-(defn spit-file [path content] (spit path content) nil)
+(defn spit-file [path content]
+  ;; exported .md are a read-only projection of the log: write 0444 so a hand-edit
+  ;; fails loud (permission denied) instead of silently stranding the log/file sync.
+  ;; setWritable first so re-export can overwrite its own prior read-only output.
+  (let [f (io/file path)]
+    (when (.exists f) (.setWritable f true))
+    (spit path content)
+    (.setReadOnly f))
+  nil)
 (defn ensure-dir [dir] (.mkdirs (io/file dir)) nil)
 (defn file-slug
   "Slug portion of a thread filename: '<id>-<slug>.md' -> '<slug>'."

@@ -45,7 +45,8 @@
   (fram.rt/ensure-dir out-dir)
   (doseq [te tes]
   (let [title (k/one-i idx te "title")
-   fname (str (subs te 1) "-" (fram.rt/slugify (if (some? title) title "untitled")) ".md")]
+   id (if (str/starts-with? te "@") (subs te 1) te)
+   fname (str id "-" (fram.rt/slugify (if (some? title) title "untitled")) ".md")]
   (fram.rt/spit-file (str out-dir "/" fname) (exp/thread-md log-claims te))))
   (println (str "exported " (count tes) " threads -> " out-dir))))))
 
