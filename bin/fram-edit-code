@@ -121,6 +121,8 @@
       (= "--name" (first a)) (recur (drop 2 a) (assoc opts :name (second a)))
       (= "--body-file" (first a)) (recur (drop 2 a) (assoc opts :body-file (second a)))
       (= "--spec-file" (first a)) (recur (drop 2 a) (assoc opts :spec-file (second a)))
+      (= "--old-file" (first a)) (recur (drop 2 a) (assoc opts :old-file (second a)))
+      (= "--new-file" (first a)) (recur (drop 2 a) (assoc opts :new-file (second a)))
       (= "--after" (first a)) (recur (drop 2 a) (assoc opts :after (second a)))
       (= "--text" (first a)) (recur (drop 2 a) (assoc opts :text (second a)))
       (= "--placement" (first a)) (recur (drop 2 a) (assoc opts :placement (second a)))
@@ -135,7 +137,7 @@
       (.write w (str (pr-str req) "\n")) (.flush w)
       (edn/read-string (.readLine rd)))))
 
-(let [{:keys [op module port log out no-commit whole-module old new name body-file spec-file after text placement]} (parse-args the-args)
+(let [{:keys [op module port log out no-commit whole-module old new name body-file spec-file after text placement old-file new-file]} (parse-args the-args)
       log-path (or log (str (System/getProperty "user.dir") "/.fram/code.log"))]
   (when (str/blank? op) (die "usage: bin/fram-edit-code <op> <module> [verb args] --port <P> [--log <code.log>] [--out <file>] [--no-commit] [--whole-module]\n  ops: rename --old <n> --new <n> | set-body --name <defn> --body-file <edn> | upsert-form --spec-file <edn> | insert-form --after <anchor> --spec-file <edn> | delete --name <def> | reorder --name <def> [--after <anchor>]"))
   (when (str/blank? module) (die "module is required (the @<mod># prefix to edit, e.g. schema)"))
@@ -175,7 +177,14 @@
                                    {:op "delete" :module module :name name})
                  "reorder"     (do (when (str/blank? name) (die "reorder needs --name <def> [--after <anchor>]"))
                                    {:op "reorder" :module module :name name :after after})
-                 (die "unknown op:" op "(rename | set-body | upsert-form | insert-form | insert-comment | delete | reorder)"))]
+                 "replace-in-body" (do (when (or (str/blank? name) (or (str/blank? old-file) (str/blank? new-file)))
+                                         (die "replace-in-body needs --name <def> --old-file <edn> --new-file <edn>"))
+                                       (when-not (.exists (io/file old-file)) (die "no old file:" old-file))
+                                       (when-not (.exists (io/file new-file)) (die "no new file:" new-file))
+                                       {:op "replace-in-body" :module module :name name
+                                        :old (edn/read-string (slurp old-file))
+                                        :new (edn/read-string (slurp new-file))})
+                 (die "unknown op:" op "(rename | set-body | upsert-form | insert-form | insert-comment | delete | reorder | replace-in-body)"))]
       ;; SAFETY GATE: refuse unless the daemon serves a CODE log (never tern).
       (let [st (coord-rt port {:op :status}) daemon-log (str (:log st))]
         (when (str/blank? daemon-log) (die "coordinator on" port "reports no :log — refusing"))
