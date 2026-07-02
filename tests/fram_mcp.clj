@@ -297,6 +297,9 @@
     ;; slurps + read-string's it, same as upsert-form), the anchor as --after.
     "insert-form" (let [sf (str work "/spec.edn")] (spit sf (:form e))
                     ["insert-form" ["--after" (:after e) "--spec-file" sf]])
+    "replace-in-body" (let [of (str work "/old.edn") nf (str work "/new.edn")]
+                        (spit of (:old e)) (spit nf (:new e))
+                        ["replace-in-body" ["--name" (:name e) "--old-file" of "--new-file" nf]])
     nil))
 
 ;; ============================================================================
@@ -319,6 +322,11 @@
     "set-body"    {:op "set-body"    :module (:module e) :name (:name e) :datum (:body e)}
     "upsert-form" {:op "upsert-form" :module (:module e) :datum (:form e)}
     "insert-form" {:op "insert-form" :module (:module e) :after (:after e) :datum (:form e)}
+    ;; SUB-DEF surgical edit — old/new are EDN-datum STRINGS from the MCP arg; parse them
+    ;; to datums here (the verb canonicalizes/mints datums, exactly as the CLI does via
+    ;; edn/read-string of the spec/body file), so the warm socket path is byte-correct.
+    "replace-in-body" {:op "replace-in-body" :module (:module e) :name (:name e)
+                       :old (clojure.edn/read-string (:old e)) :new (clojure.edn/read-string (:new e))}
     nil))
 
 ;; the corpus the verb operates over = every .bclj in the source tree (so cross-module
@@ -419,6 +427,9 @@
                   "set-body"    (do (spit spec-file (:body e))
                                     (concat ["set-body" (:name e) module spec-file] edn-paths))
                   "rename"      (concat ["rename" (:name e) (:new-name e) module] edn-paths)
+                  "replace-in-body" (let [of (str work "/old.edn") nf (str work "/new.edn")]
+                                      (spit of (:old e)) (spit nf (:new e))
+                                      (concat ["replace-in-body" (:name e) module of nf] edn-paths))
                   nil)]
             (if (nil? resolve-args)
               (do (sh {} "rm" "-rf" work) {:isError true :text (str "unknown edit op: " op)})
@@ -463,7 +474,7 @@
 
 ;; the graph-AST edit tools — these route through route-edit (a long recompile-gated
 ;; transaction), NOT the query budget. Names match the structural ToolSpecs in tools.bclj.
-(def ^:private edit-tools #{"add-def" "set-body" "rename-def" "insert-after"})
+(def ^:private edit-tools #{"add-def" "set-body" "rename-def" "insert-after" "replace-in-body"})
 (defn- edit-tool? [nm] (contains? edit-tools nm))
 
 ;; --- KB claim verbs: tell / untell --------------------------------------------

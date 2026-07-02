@@ -1425,6 +1425,140 @@
                       (str "replaced body of defn `" name "` in \"" scope "\" ("
                            (count body-slots) " body slot(s) superseded; new body minted as claims)"))))))
 
+;; ============================================================================
+;; replace-in-body — SUB-DEF surgical edit. Replace ONE interior form inside a def,
+;; addressed by an ANCHOR datum (the OLD form, as it reads in source), with a NEW
+;; form — WITHOUT re-emitting the whole def. Kills the mega-def floor (duel lever #2):
+;; changing one case in a 1,768-line def costs ONE fN-edge swap, not a whole-def
+;; re-mint. Same claim-op discipline as set-body — supersede exactly the touched fN
+;; edge, mint the replacement, recompile-gated + fail-closed — but at INTERIOR
+;; granularity. Because only one edge moves and the def is never re-minted, EVERY
+;; sibling form + all attached comments (the def's leading comments, other cases)
+;; survive untouched — it does not carry set-body's comment-fidelity loss (019f208b-d67b).
+;;
+;; ADDRESSING — anchor-form match (Edit-tool old_string, but on the AST). The model
+;; emits the OLD interior form + the NEW one; we canonicalize both STRUCTURALLY (kind
+;; + rendered spelling + child shape, whitespace/formatting ignored) and require the
+;; anchor to match EXACTLY ONE interior node. 0 or >1 matches REFUSE (no claims
+;; mutated) — the model disambiguates by supplying a larger enclosing form, exactly
+;; like old_string uniqueness. Structural (not textual) match is why the model need
+;; not reproduce whitespace: it emits the form, we compare shape.
+;;
+;; render-sym — the spelling a symbol node RENDERS as (mirrors extract-file!'s
+;; reference-rendering): a resolved reference shows its binding's CURRENT name
+;; (mode-adjusted: ctor prefix, x/qualifier, :rename keep-spelling); an unresolved /
+;; literal symbol shows its stored v. Matching the anchor against the RENDERED
+;; spelling (not the stored v) is what makes the model's old-form — read off the
+;; current source text — line up with the graph even after a prior graph rename.
+(defn render-sym [e]
+  (let [v (pred-val e "v")]
+    (if-let [D (refers-target e)]
+      (let [fixed?  (seq (c/by-lp ctx e FIXED))
+            qual    (pred-val e "qualifier")
+            cpfx    (pred-val e "ctor_prefix")
+            afield  (pred-val e "accessor_field")
+            nm      (binding-name D)
+            nm      (cond cpfx   (str cpfx nm)
+                          afield (str (str/lower-case nm) "-" afield)
+                          :else  nm)]
+        (cond fixed? v
+              qual  (str qual "/" nm)
+              :else nm))
+      v)))
+;; canonical comparison form — structural, formatting-insensitive. Leaf -> [:leaf kind
+;; spelling]; list -> [:list child-canon...]. Both an anchor DATUM (as clojure.edn read
+;; it) and a graph NODE canonicalize into the SAME shape, re-encoding EDN nil/bool/
+;; keyword the beagle way (mint-datum!'s conventions: beagle reads .b* via Racket, so
+;; nil/true/false/:kw are all SYMBOL leaves) so `nil`/`true`/`:foo` match their storage.
+(defn datum->canon [d]
+  (cond
+    (nil? d)      [:leaf "symbol" "nil"]
+    (symbol? d)   [:leaf "symbol" (str d)]
+    (keyword? d)  [:leaf "symbol" (str d)]
+    (boolean? d)  [:leaf "symbol" (if d "true" "false")]
+    (string? d)   [:leaf "string" d]
+    (char? d)     [:leaf "char"   (str d)]
+    (number? d)   [:leaf "number" (str d)]
+    (vector? d)   (into [:list [:leaf "symbol" "#%brackets"]] (map datum->canon d))
+    (map? d)      (into [:list [:leaf "symbol" "#%map"]] (map datum->canon (apply concat (seq d))))
+    (or (list? d) (seq? d)) (into [:list] (map datum->canon d))
+    :else         [:leaf "other" (pr-str d)]))
+;; anchor-matches — single POST-ORDER pass over a def form's subtree that computes each
+;; node's canon EXACTLY ONCE (O(N), not O(N^2) — a naive "canonize every candidate" re-walks
+;; each subtree per candidate and blows up on a 10k-node mega-def). Returns every
+;; [parent pos-literal edge-cid child-node] fN edge whose child's canon equals `target`.
+;; Children are visited in CRDT (ord-key) order so the list canon matches datum order.
+;; The def-form ROOT itself is never a candidate (only CHILDREN are recorded) — replacing
+;; a whole top-level def is upsert-form's job, not this verb's.
+(defn ord-edges [n]                     ; [ord-key pos-lit cid child] fN edges of n, CRDT-ordered
+  (->> (c/by-l ctx n)
+       (keep (fn [cid] (let [cl (c/claim-of ctx cid) p (c/literal ctx (:p cl))]
+                         (when (and (string? p) (ord-pos? p) (integer? (:r cl)))
+                           [(ord-parse p) p cid (:r cl)]))))
+       (sort-by first ord-cmp)))
+(defn anchor-matches [root target]
+  (let [matches (atom [])]
+    (letfn [(go [n]
+              (if (= "list" (kind-of n))
+                (into [:list]
+                      (mapv (fn [[_ pos cid ch]]
+                              (let [cc (go ch)]
+                                (when (= cc target) (swap! matches conj [n pos cid ch]))
+                                cc))
+                            (ord-edges n)))
+                (if (= "symbol" (kind-of n))
+                  [:leaf "symbol" (render-sym n)]
+                  [:leaf (kind-of n) (pred-val n "v")])))]
+      (go root)
+      @matches)))
+;; verb-replace-in-body! — swap ONE interior form of def `name` (matched by `old-datum`)
+;; for `new-datum`. Reuses the matched edge's EXACT position literal (integer fN preserved
+;; -> byte-stable, racket --render sees it) — retire the old edge, mint the new form, wire
+;; a fresh edge at the same slot. Mirrors set-body's edge-swap, at interior granularity.
+(defn verb-replace-in-body! [name scope old-datum new-datum]
+  (let [target-srcs (filter #(str/includes? % scope) srcs)]
+    (when (not= 1 (count target-srcs))
+      (binding [*out* *err*]
+        (println (str "REJECTED — scope \"" scope "\" matches " (count target-srcs)
+                      " source files; replace-in-body needs exactly one (no claims mutated).")))
+      (*reject!* 3))
+    (let [src  (first target-srcs)
+          B    (def-binding src name)
+          form (when B (form-for-victim src B))]
+      (when (nil? form)
+        (binding [*out* *err*]
+          (println (str "REJECTED — no def named `" name "` found in \"" scope
+                        "\" (nothing to edit; no claims mutated).")))
+        (*reject!* 5))
+      (let [target-canon (datum->canon old-datum)
+            matches      (anchor-matches form target-canon)]
+        (cond
+          (zero? (count matches))
+          (do (binding [*out* *err*]
+                (println (str "REJECTED — anchor form not found inside `" name "` in \"" scope
+                              "\" (0 matches; no claims mutated). The old form must match an interior "
+                              "form structurally (head + spelling + child shape).")))
+              (*reject!* 5))
+          (> (count matches) 1)
+          (do (binding [*out* *err*]
+                (println (str "REJECTED — anchor form is AMBIGUOUS inside `" name "` in \"" scope "\" ("
+                              (count matches) " matches; no claims mutated). Supply a larger enclosing "
+                              "form so exactly one interior form matches (old_string uniqueness).")))
+              (*reject!* 5))
+          :else
+          (let [[parent pos-lit cid _] (first matches)
+                new-root (mint-datum! src new-datum)]
+            ;; retire the matched fN edge + re-point the SAME position literal at the
+            ;; freshly-minted form — by-l filters superseded, so reads see only the new
+            ;; child; the integer fN is reused verbatim -> byte-stable outside the edit.
+            (retire-claim! cid)
+            (c/claim! ctx parent (c/value! ctx pos-lit) new-root tx)
+            (when-not *capture-only?* (re-resolve!))
+            (author-emit-scoped! "replace-in-body"
+                          (str "replaced 1 interior form inside `" name "` in \"" scope
+                               "\" (1 fN edge superseded + re-pointed at a freshly-minted form; "
+                               "def NOT re-emitted — siblings + comments preserved; refs via refers_to)"))))))))
+
 ;; delete — remove a top-level def by name. CLAIM-NATIVE + fail-closed: the same
 ;; victim/subtree/orphan computation as the CLI `delete` arm, but the EFFECT is a
 ;; supersede of the wrapper's fN form-edge claim(s) pointing at the deleted form(s).
@@ -1559,6 +1693,7 @@
              "insert-form" (verb-insert-form! module (:after spec) (:datum spec))   ; CRDT mid-insert (#36)
              "insert-comment" (verb-insert-comment! module (:after spec) (:text spec) (:placement spec))  ; Turtle #6 comment authoring (#30)
              "set-body"    (verb-set-body! (:name spec) module (:datum spec))
+             "replace-in-body" (verb-replace-in-body! (:name spec) module (:old spec) (:new spec))  ; SUB-DEF surgical edit — swap one interior form (mega-def floor)
              "delete"      (verb-delete! (:name spec) module)   ; remove a top-level def (fail-closed on orphans)
              "reorder"     (verb-reorder! (:name spec) module (:after spec))   ; move a def — re-spell order key, no node churn
              (do (binding [*out* *err*] (println (str "run-verb-warm!: unknown op " (:op spec))))
@@ -1649,10 +1784,10 @@
 ;; one `resolve-edn!` binding scope, so dispatch reads the freshly-bound store /
 ;; tables / counters exactly as the old top-level code did. GUARDED: loaded as a
 ;; library (no recognized mode), nothing runs — no load-edn over mis-sliced args.
-(def MODES #{"resolve" "rename" "delete" "reorder" "callgraph" "upsert-form" "set-body"})
+(def MODES #{"resolve" "rename" "delete" "reorder" "callgraph" "upsert-form" "set-body" "replace-in-body"})
 (defn -main []
   (let [edn-paths (drop (case mode "resolve" 1 "rename" 4 "delete" 3 "reorder" 4 "callgraph" 1
-                                   "upsert-form" 3 "set-body" 4)
+                                   "upsert-form" 3 "set-body" 4 "replace-in-body" 5)
                         *command-line-args*)]
     (resolve-edn!
      edn-paths
@@ -1711,6 +1846,16 @@
   (let [[name scope body-file] (drop 1 *command-line-args*)
         datum (edn/read-string (slurp body-file))]
     (verb-set-body! name scope datum))
+
+  ;; replace-in-body : SUB-DEF surgical edit — replace ONE interior form of the named
+  ;; def (matched structurally by the OLD form) with a NEW form, WITHOUT re-emitting the
+  ;; def. Anchor-form addressing (Edit-tool old_string on the AST): unique match required,
+  ;; fail-closed on 0/>1. old-file/new-file each hold one EDN datum (the verb reads them).
+  "replace-in-body"
+  (let [[name scope old-file new-file] (drop 1 *command-line-args*)
+        old-datum (edn/read-string (slurp old-file))
+        new-datum (edn/read-string (slurp new-file))]
+    (verb-replace-in-body! name scope old-datum new-datum))
 
   ;; ============================================================================
   ;; callgraph — the scope-correct call graph + transitive blast radius, derived
